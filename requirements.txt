@@ -1,0 +1,14 @@
+Flask
+Werkzeug
+requests
+Pillow
+numpy
+opencv-python
+scipy
+scikit-image
+scikit-learn
+joblib
+matplotlib
+Flask-Cors
+gunicorn
+c2pa-python
