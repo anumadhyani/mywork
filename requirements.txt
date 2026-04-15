@@ -3,7 +3,7 @@ Werkzeug
 requests
 Pillow
 numpy
-opencv-python
+opencv-python-headless
 scipy
 scikit-image
 scikit-learn
