@@ -10,5 +10,7 @@ scikit-learn
 joblib
 matplotlib
 Flask-Cors
+Flask-Limiter
+onnxruntime
 gunicorn
 c2pa-python
