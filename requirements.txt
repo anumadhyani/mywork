@@ -12,5 +12,6 @@ matplotlib
 Flask-Cors
 Flask-Limiter
 onnxruntime
+psycopg2-binary
 gunicorn
 c2pa-python

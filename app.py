@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -20,6 +20,9 @@ CORS(app)
 _ANALYTICS_DB_PATH = os.getenv("ANALYTICS_DB_PATH", os.path.join(os.getcwd(), "analytics.sqlite3"))
 _GEO_CACHE_TTL_SECONDS = int(os.getenv("GEO_CACHE_TTL_SECONDS", "86400"))
 _geo_cache = {}
+_DATABASE_URL = os.getenv("DATABASE_URL")
+_ANALYTICS_RETENTION_DAYS = int(os.getenv("ANALYTICS_RETENTION_DAYS", "30"))
+_analytics_last_cleanup_ts = 0.0
 
 limiter = Limiter(
     key_func=get_remote_address,
@@ -29,14 +32,77 @@ limiter = Limiter(
 limiter.init_app(app)
 
 
-def _db_conn():
+def _sqlite_conn():
     conn = sqlite3.connect(_ANALYTICS_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def _pg_conn():
+    import psycopg2
+
+    return psycopg2.connect(_DATABASE_URL)
+
+
+def _maybe_cleanup_analytics():
+    global _analytics_last_cleanup_ts
+
+    now = time.time()
+    if now - _analytics_last_cleanup_ts < 3600:
+        return
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_ANALYTICS_RETENTION_DAYS)
+
+    try:
+        if _DATABASE_URL:
+            conn = _pg_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM api_requests WHERE ts_utc < %s", (cutoff,))
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            conn = _sqlite_conn()
+            try:
+                conn.execute("DELETE FROM api_requests WHERE ts_utc < ?", (cutoff.isoformat(),))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        pass
+
+    _analytics_last_cleanup_ts = now
+
+
 def _ensure_analytics_schema():
-    conn = _db_conn()
+    if _DATABASE_URL:
+        conn = _pg_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_requests (
+                  id BIGSERIAL PRIMARY KEY,
+                  ts_utc TIMESTAMPTZ NOT NULL,
+                  ip TEXT,
+                  method TEXT,
+                  path TEXT,
+                  status_code INTEGER,
+                  country TEXT,
+                  region TEXT,
+                  city TEXT
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_ts ON api_requests(ts_utc)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_ip ON api_requests(ip)")
+            conn.commit()
+        finally:
+            conn.close()
+        return
+
+    conn = _sqlite_conn()
     try:
         conn.execute(
             """
@@ -100,6 +166,7 @@ def _geo_lookup(ip):
 @app.before_request
 def _analytics_before_request():
     _ensure_analytics_schema()
+    _maybe_cleanup_analytics()
 
 
 @app.after_request
@@ -113,27 +180,51 @@ def _analytics_after_request(response):
     ts_utc = datetime.now(timezone.utc).isoformat()
 
     try:
-        conn = _db_conn()
-        try:
-            conn.execute(
-                """
-                INSERT INTO api_requests (ts_utc, ip, method, path, status_code, country, region, city)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    ts_utc,
-                    ip,
-                    request.method,
-                    path,
-                    int(getattr(response, "status_code", 0) or 0),
-                    geo.get("country"),
-                    geo.get("region"),
-                    geo.get("city"),
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        if _DATABASE_URL:
+            conn = _pg_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO api_requests (ts_utc, ip, method, path, status_code, country, region, city)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        datetime.now(timezone.utc),
+                        ip,
+                        request.method,
+                        path,
+                        int(getattr(response, "status_code", 0) or 0),
+                        geo.get("country"),
+                        geo.get("region"),
+                        geo.get("city"),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            conn = _sqlite_conn()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO api_requests (ts_utc, ip, method, path, status_code, country, region, city)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ts_utc,
+                        ip,
+                        request.method,
+                        path,
+                        int(getattr(response, "status_code", 0) or 0),
+                        geo.get("country"),
+                        geo.get("region"),
+                        geo.get("city"),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
     except Exception:
         pass
 
@@ -161,44 +252,93 @@ def admin_dashboard():
         return jsonify({"status": "failure", "error": "Unauthorized"}), 401
 
     _ensure_analytics_schema()
-    conn = _db_conn()
-    try:
-        total_requests = conn.execute("SELECT COUNT(*) AS c FROM api_requests").fetchone()["c"]
-        total_users = conn.execute(
-            "SELECT COUNT(DISTINCT ip) AS c FROM api_requests WHERE ip IS NOT NULL AND ip != ''"
-        ).fetchone()["c"]
-        by_country = conn.execute(
-            """
-            SELECT COALESCE(country, 'Unknown') AS country, COUNT(*) AS c
-            FROM api_requests
-            GROUP BY COALESCE(country, 'Unknown')
-            ORDER BY c DESC
-            LIMIT 50
-            """
-        ).fetchall()
-        recent = conn.execute(
-            """
-            SELECT ts_utc, ip, method, path, status_code, COALESCE(country, 'Unknown') AS country
-            FROM api_requests
-            ORDER BY id DESC
-            LIMIT 100
-            """
-        ).fetchall()
-    finally:
-        conn.close()
+    if _DATABASE_URL:
+        conn = _pg_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM api_requests")
+            total_requests = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT ip) FROM api_requests WHERE ip IS NOT NULL AND ip != ''")
+            total_users = cur.fetchone()[0]
+            cur.execute(
+                """
+                SELECT COALESCE(country, 'Unknown') AS country, COUNT(*) AS c
+                FROM api_requests
+                GROUP BY COALESCE(country, 'Unknown')
+                ORDER BY c DESC
+                LIMIT 50
+                """
+            )
+            by_country = [
+                {"country": r[0], "c": r[1]}
+                for r in cur.fetchall()
+            ]
+            cur.execute(
+                """
+                SELECT ts_utc, ip, method, path, status_code, COALESCE(country, 'Unknown') AS country
+                FROM api_requests
+                ORDER BY id DESC
+                LIMIT 100
+                """
+            )
+            recent = [
+                {
+                    "ts_utc": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                    "ip": r[1],
+                    "method": r[2],
+                    "path": r[3],
+                    "status_code": r[4],
+                    "country": r[5],
+                }
+                for r in cur.fetchall()
+            ]
+        finally:
+            conn.close()
+    else:
+        conn = _sqlite_conn()
+        try:
+            total_requests = conn.execute("SELECT COUNT(*) AS c FROM api_requests").fetchone()["c"]
+            total_users = conn.execute(
+                "SELECT COUNT(DISTINCT ip) AS c FROM api_requests WHERE ip IS NOT NULL AND ip != ''"
+            ).fetchone()["c"]
+            by_country = conn.execute(
+                """
+                SELECT COALESCE(country, 'Unknown') AS country, COUNT(*) AS c
+                FROM api_requests
+                GROUP BY COALESCE(country, 'Unknown')
+                ORDER BY c DESC
+                LIMIT 50
+                """
+            ).fetchall()
+            recent = conn.execute(
+                """
+                SELECT ts_utc, ip, method, path, status_code, COALESCE(country, 'Unknown') AS country
+                FROM api_requests
+                ORDER BY id DESC
+                LIMIT 100
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+
+    def _get(row, key):
+        return row[key] if hasattr(row, "keys") else row.get(key)
 
     country_rows = "".join(
-        [f"<tr><td>{r['country']}</td><td style='text-align:right'>{r['c']}</td></tr>" for r in by_country]
+        [
+            f"<tr><td>{(_get(r, 'country') or '')}</td><td style='text-align:right'>{_get(r, 'c')}</td></tr>"
+            for r in by_country
+        ]
     )
     recent_rows = "".join(
         [
             "<tr>"
-            f"<td>{r['ts_utc']}</td>"
-            f"<td>{r['ip'] or ''}</td>"
-            f"<td>{r['method']}</td>"
-            f"<td>{r['path']}</td>"
-            f"<td style='text-align:right'>{r['status_code']}</td>"
-            f"<td>{r['country']}</td>"
+            f"<td>{(_get(r, 'ts_utc') or '')}</td>"
+            f"<td>{(_get(r, 'ip') or '')}</td>"
+            f"<td>{(_get(r, 'method') or '')}</td>"
+            f"<td>{(_get(r, 'path') or '')}</td>"
+            f"<td style='text-align:right'>{(_get(r, 'status_code') or '')}</td>"
+            f"<td>{(_get(r, 'country') or '')}</td>"
             "</tr>"
             for r in recent
         ]
@@ -251,6 +391,56 @@ def admin_dashboard():
         </tbody>
       </table>
     </div>
+  </body>
+</html>"""
+
+    return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@app.get("/privacy")
+def privacy_policy():
+    html = """<!doctype html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Privacy Policy</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; max-width: 900px; }
+      h1 { margin: 0 0 8px 0; }
+      h2 { margin-top: 18px; font-size: 16px; }
+      p, li { line-height: 1.5; }
+      .muted { color: #6b7280; font-size: 12px; }
+      code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>Privacy Policy</h1>
+    <div class=\"muted\">Last updated: """ + datetime.now(timezone.utc).date().isoformat() + """</div>
+
+    <h2>What data we collect</h2>
+    <ul>
+      <li>IP address</li>
+      <li>Request metadata (timestamp, endpoint path, HTTP method, status code)</li>
+      <li>Approximate location derived from IP (country/region/city), when available</li>
+    </ul>
+
+    <h2>Why we collect it</h2>
+    <ul>
+      <li>Rate limiting</li>
+      <li>Abuse prevention</li>
+      <li>Usage analytics (e.g., total usage and usage by geography)</li>
+    </ul>
+
+    <h2>Data retention</h2>
+    <p>
+      We retain analytics data for up to <strong>30 days</strong> and then delete older records.
+    </p>
+
+    <h2>Contact</h2>
+    <p>
+      If you have questions about this policy, please contact the service owner.
+    </p>
   </body>
 </html>"""
 
