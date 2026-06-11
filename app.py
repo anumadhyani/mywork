@@ -109,6 +109,7 @@ def _admin_allowlisted(ip: str) -> bool:
 
 
 def _admin_guard():
+    _ensure_auth_schema()
     ip = _get_client_ip()
     if not _admin_allowlisted(ip):
         _admin_audit("admin_denied_ip", {"ip": ip})
@@ -209,6 +210,7 @@ def _admin_audit(action: str, details: dict | None = None):
     if not _DATABASE_URL:
         return
     try:
+        _ensure_auth_schema()
         conn = _pg_conn()
         try:
             cur = conn.cursor()
@@ -319,12 +321,17 @@ def _ensure_analytics_schema():
 
 
 def _get_client_ip():
+    # Prefer the original client IP provided by the edge proxy.
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        ip = xff.split(",")[0].strip()
+        return ip or None
+
+    if request.access_route:
+        return request.access_route[0]
+
     ip = get_remote_address()
-    if not ip:
-        return None
-    if ip == "127.0.0.1" and request.headers.get("X-Forwarded-For"):
-        ip = request.headers.get("X-Forwarded-For").split(",")[0].strip()
-    return ip
+    return ip or None
 
 
 def _geo_lookup(ip):
