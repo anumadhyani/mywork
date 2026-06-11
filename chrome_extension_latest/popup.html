@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Image Analysis</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h2>Image Analyzer</h2>
+    <form id="analysisForm">
+      <div class="input-group">
+        <label for="apiKeyInput">API Key:</label>
+        <input type="password" id="apiKeyInput" placeholder="mw_live_...">
+      </div>
+
+      <div class="input-group">
+        <label for="fileInput">Upload Image:</label>
+        <input type="file" id="fileInput" accept=".png,.jpg,.jpeg" required>
+      </div>
+
+      <div class="input-group">
+        <label>Analysis Type:</label>
+        <div>
+          <input type="radio" id="ai_detect" name="analysis_type" value="ai_detect" checked>
+          <label for="ai_detect">AI Detection</label>
+        </div>
+        <div>
+          <input type="radio" id="forensics" name="analysis_type" value="forensics">
+          <label for="forensics">Forensic Analysis</label>
+        </div>
+      </div>
+
+      <div class="input-group hidden" id="forensicOptions">
+        <label for="threshold_value">Threshold Value (0-255):</label>
+        <input type="number" id="threshold_value" value="100" min="0" max="255">
+
+        <label for="min_area_threshold">Min Area (pixels):</label>
+        <input type="number" id="min_area_threshold" value="100" min="1">
+      </div>
+
+      <button type="submit" id="analyzeButton">Analyze</button>
+    </form>
+
+    <div id="loadingIndicator" class="hidden">
+      <p>Processing image...</p>
+      <div class="loader"></div>
+    </div>
+
+    <div id="results" class="hidden">
+      <h3>Analysis Results:</h3>
+      <p id="resultText"></p>
+      <div id="resultImages"></div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
