@@ -1,0 +1,10 @@
+{
+  "model": "mobilenetv3_large_embedding + logistic_regression",
+  "dataset_a": "cifake",
+  "dataset_b": "pico_banana",
+  "holdout": "b",
+  "holdout_name": "pico_banana",
+  "onnx": "models/mobilenetv3_embedding.onnx",
+  "classifier": "models/embedding_logreg.joblib",
+  "embedding_dim": 960
+}

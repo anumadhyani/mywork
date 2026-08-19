@@ -40,13 +40,14 @@ def _label_from_p_ai(p_ai: float):
     if p_ai > LIKELY_AI_THRESHOLD:
         return "Likely AI", "likely_ai"
 
-    if p_ai >= LIKELY_REAL_THRESHOLD:
-        return "Likely Real", "likely_real"
-
-    if p_ai >= REAL_THRESHOLD:
+    # Real thresholds should apply when the model believes p_ai is low.
+    if p_ai <= REAL_THRESHOLD:
         return "Real", "real"
 
-    return "Real", "real"
+    if p_ai < LIKELY_REAL_THRESHOLD:
+        return "Likely Real", "likely_real"
+
+    return "Uncertain", "uncertain"
 
 
 @lru_cache(maxsize=1)

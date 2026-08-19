@@ -116,6 +116,9 @@ def _admin_guard():
         return jsonify({"status": "failure", "error": "Unauthorized"}), 401
 
     token = os.getenv("ADMIN_TOKEN")
+    if not (token or "").strip():
+        _admin_audit("admin_denied_missing_token", {"ip": ip})
+        return jsonify({"status": "failure", "error": "Unauthorized"}), 401
     supplied = request.headers.get("X-Admin-Token") or request.args.get("token")
     if token and supplied != token:
         _admin_audit("admin_denied_token", {"ip": ip})
