@@ -23,6 +23,7 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
+      "apiBaseUrl": "https://mywork-production.up.railway.app",
       "eas": {
         "projectId": "c8f07aff-5701-47b2-a0a1-1b15c67fe47c"
       }

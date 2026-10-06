@@ -13,9 +13,13 @@
   },
   "permissions": [
     "contextMenus",
+    "permissions",
     "storage"
   ],
   "host_permissions": [
+    "https://mywork-production.up.railway.app/*"
+  ],
+  "optional_host_permissions": [
     "http://*/*",
     "https://*/*"
   ],

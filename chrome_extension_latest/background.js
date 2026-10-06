@@ -1,5 +1,30 @@
 const FLASK_BACKEND_URL = 'https://mywork-production.up.railway.app';
 
+async function ensureHostPermissionForUrl(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return false;
+  }
+
+  const originPattern = `${u.origin}/*`;
+
+  const alreadyGranted = await new Promise((resolve) => {
+    chrome.permissions.contains({ origins: [originPattern] }, resolve);
+  });
+  if (alreadyGranted) return true;
+
+  const granted = await new Promise((resolve) => {
+    chrome.permissions.request({ origins: [originPattern] }, resolve);
+  });
+  return Boolean(granted);
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('background.js: Extension installed. Creating context menu.');
   chrome.contextMenus.create({
@@ -16,6 +41,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     console.log('background.js: Image URL selected:', imageUrl);
 
     try {
+      const ok = await ensureHostPermissionForUrl(imageUrl);
+      if (!ok) {
+        throw new Error('Permission denied to access this image URL.');
+      }
+
       console.log('background.js: Attempting to fetch image from URL:', imageUrl);
       const response = await fetch(imageUrl);
       if (!response.ok) {
