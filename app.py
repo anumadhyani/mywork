@@ -1255,15 +1255,32 @@ def api_ai_detect():
 
         result = predict_image(tmp_path, model_path=model_path)
 
+        # --- Diagnostics (helps debug thresholding + model bias in production) ---
+        # Keep these fields lightweight and numeric; clients can ignore them.
+        proba = result.get("proba") if isinstance(result, dict) else None
+        p_ai = None
+        if isinstance(proba, list) and len(proba) >= 2:
+            try:
+                p_ai = float(proba[1])
+            except Exception:
+                p_ai = None
+
         confidence = None
-        if "proba" in result and isinstance(result["proba"], list) and len(result["proba"]) >= 2:
-            confidence = {"real": float(result["proba"][0]), "fake": float(result["proba"][1])}
+        if isinstance(proba, list) and len(proba) >= 2:
+            confidence = {"real": float(proba[0]), "fake": float(proba[1])}
 
         return jsonify(
             {
                 "status": "success",
                 "prediction": result.get("label"),
                 "confidence": confidence,
+                # --- Debug fields (safe for clients; no secrets) ---
+                "band": result.get("band"),
+                "uncertain": result.get("uncertain"),
+                "backend": result.get("backend"),
+                "pred": result.get("pred"),
+                "proba": proba,
+                "p_ai": p_ai,
             }
         )
     except Exception as e:
