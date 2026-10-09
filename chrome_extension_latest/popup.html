@@ -9,8 +9,11 @@
     <h2>Image Analyzer</h2>
     <form id="analysisForm">
       <div class="input-group">
-        <label for="apiKeyInput">API Key:</label>
-        <input type="password" id="apiKeyInput" placeholder="mw_live_...">
+        <div id="authControls">
+          <button type="button" id="signInButton">Sign in with Google</button>
+          <button type="button" id="signOutButton" class="hidden">Sign out</button>
+        </div>
+        <p id="authStatus" style="margin: 6px 0 0 0; font-size: 0.9em;"></p>
       </div>
 
       <div class="input-group">

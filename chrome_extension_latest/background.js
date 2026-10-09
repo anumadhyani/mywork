@@ -43,7 +43,16 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     try {
       const ok = await ensureHostPermissionForUrl(imageUrl);
       if (!ok) {
-        throw new Error('Permission denied to access this image URL.');
+        chrome.storage.local.set(
+          {
+            analysisError: 'Permission denied to access this image URL. Allow access to the site to analyze images.',
+            selectedImageSrcUrl: imageUrl,
+          },
+          () => {
+            chrome.action.openPopup();
+          }
+        );
+        return;
       }
 
       console.log('background.js: Attempting to fetch image from URL:', imageUrl);
@@ -84,6 +93,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         console.log('background.js: Image converted to Base64. Storing in chrome.storage.local. File name:', fileName);
 
         chrome.storage.local.set({
+          'analysisError': '',
           'selectedImageSrcUrl': imageUrl,
           'selectedImageData': base64data,
           'selectedImageFileName': fileName
@@ -103,7 +113,15 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
     } catch (error) {
       console.error('background.js: Error fetching or processing image:', error);
-      // Error handling if needed
+      chrome.storage.local.set(
+        {
+          analysisError: `Failed to analyze image: ${String(error && error.message ? error.message : error)}`,
+          selectedImageSrcUrl: imageUrl,
+        },
+        () => {
+          chrome.action.openPopup();
+        }
+      );
     }
   }
 });

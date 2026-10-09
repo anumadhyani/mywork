@@ -9,7 +9,9 @@ document.addEventListener('DOMContentLoaded', function() {
   const forensicOptions = document.getElementById('forensicOptions');
   const aiDetectRadio = document.getElementById('ai_detect');
   const forensicsRadio = document.getElementById('forensics');
-  const apiKeyInput = document.getElementById('apiKeyInput');
+  const signInButton = document.getElementById('signInButton');
+  const signOutButton = document.getElementById('signOutButton');
+  const authStatus = document.getElementById('authStatus');
 
   // Variable to store image data from context menu, if any
   let currentImageForAnalysis = null;
@@ -18,26 +20,129 @@ document.addEventListener('DOMContentLoaded', function() {
 
   const FLASK_BACKEND_URL = 'https://mywork-production.up.railway.app';
 
-  function _getApiKey() {
-    const k = (apiKeyInput && apiKeyInput.value ? apiKeyInput.value : '').trim();
-    return k || null;
-  }
-
-  function _persistApiKey() {
-    const k = _getApiKey();
-    chrome.storage.sync.set({ apiKey: k || '' });
-  }
-
-  chrome.storage.sync.get(['apiKey'], function(result) {
-    if (apiKeyInput && result && typeof result.apiKey === 'string') {
-      apiKeyInput.value = result.apiKey;
+  // --- Google Sign-In + first-party JWT handling ---
+  function _setAuthUi(jwtToken, email) {
+    const isAuthed = !!jwtToken;
+    if (signInButton) signInButton.classList.toggle('hidden', isAuthed);
+    if (signOutButton) signOutButton.classList.toggle('hidden', !isAuthed);
+    if (authStatus) {
+      authStatus.textContent = isAuthed ? (`Signed in${email ? ` as ${email}` : ''}.`) : 'Not signed in.';
     }
-  });
-
-  if (apiKeyInput) {
-    apiKeyInput.addEventListener('change', _persistApiKey);
-    apiKeyInput.addEventListener('blur', _persistApiKey);
   }
+
+  function _getStoredJwt() {
+    // JWT is issued by our backend (/auth/google) and persisted in chrome.storage.sync.
+    return new Promise((resolve) => {
+      chrome.storage.sync.get(['authJwt', 'authEmail'], function(result) {
+        const tok = (result && typeof result.authJwt === 'string') ? result.authJwt : '';
+        const email = (result && typeof result.authEmail === 'string') ? result.authEmail : '';
+        resolve({ token: tok || null, email: email || null });
+      });
+    });
+  }
+
+  async function _exchangeGoogleAccessTokenForJwt(googleAccessToken) {
+    // Exchange Google token for our own JWT so the backend can auth requests consistently.
+    const resp = await fetch(`${FLASK_BACKEND_URL}/auth/google`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: googleAccessToken })
+    });
+
+    if (!resp.ok) {
+      let msg = `HTTP error! status: ${resp.status}`;
+      try {
+        const data = await resp.json();
+        if (data && data.error) msg = data.error;
+      } catch (e) {
+      }
+      throw new Error(msg);
+    }
+    return await resp.json();
+  }
+
+  async function _signInInteractive() {
+    const getAuthToken = () => new Promise((resolve, reject) => {
+      // chrome.identity uses the extension's oauth2 client_id/scopes from manifest.json.
+      chrome.identity.getAuthToken({ interactive: true }, function(token) {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(token);
+      });
+    });
+
+    const googleAccessToken = await getAuthToken();
+    const jwtResp = await _exchangeGoogleAccessTokenForJwt(googleAccessToken);
+    const jwtToken = (jwtResp && typeof jwtResp.access_token === 'string') ? jwtResp.access_token : null;
+    if (!jwtToken) {
+      throw new Error('invalid_jwt_response');
+    }
+
+    // Best-effort: fetch email for display only.
+    const tiResp = await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(googleAccessToken)}`);
+    let email = null;
+    if (tiResp.ok) {
+      try {
+        const ti = await tiResp.json();
+        if (ti && typeof ti.email === 'string') email = ti.email;
+      } catch (e) {
+      }
+    }
+
+    await new Promise((resolve) => {
+      chrome.storage.sync.set({ authJwt: jwtToken, authEmail: email || '' }, resolve);
+    });
+
+    _setAuthUi(jwtToken, email);
+    return jwtToken;
+  }
+
+  async function _signOut() {
+    const removeAuthToken = () => new Promise((resolve) => {
+      // Remove cached token so subsequent calls require interactive login again.
+      chrome.identity.getAuthToken({ interactive: false }, function(token) {
+        if (!token) {
+          resolve(null);
+          return;
+        }
+        chrome.identity.removeCachedAuthToken({ token }, function() {
+          resolve(null);
+        });
+      });
+    });
+
+    await removeAuthToken();
+    await new Promise((resolve) => chrome.storage.sync.remove(['authJwt', 'authEmail'], resolve));
+    _setAuthUi(null, null);
+  }
+
+  if (signInButton) {
+    signInButton.addEventListener('click', async function() {
+      try {
+        await _signInInteractive();
+      } catch (e) {
+        resultsDiv.classList.remove('hidden');
+        resultText.textContent = `Sign-in failed: ${e.message}`;
+      }
+    });
+  }
+
+  if (signOutButton) {
+    signOutButton.addEventListener('click', async function() {
+      try {
+        await _signOut();
+      } catch (e) {
+        resultsDiv.classList.remove('hidden');
+        resultText.textContent = `Sign-out failed: ${e.message}`;
+      }
+    });
+  }
+
+  _getStoredJwt().then(({ token, email }) => {
+    _setAuthUi(token, email);
+  });
 
   // Toggle forensic options visibility based on radio button selection
   function toggleForensicOptions() {
@@ -105,11 +210,16 @@ document.addEventListener('DOMContentLoaded', function() {
     resultImages.innerHTML = ''; // Clear previous images
     resultText.textContent = ''; // Clear previous text
 
-    const apiKey = _getApiKey();
-    if (!apiKey) {
+    let jwtToken = null;
+    try {
+      const stored = await _getStoredJwt();
+      jwtToken = stored.token;
+    } catch (e) {
+    }
+    if (!jwtToken) {
       loadingIndicator.classList.add('hidden');
       resultsDiv.classList.remove('hidden');
-      resultText.textContent = 'Please add your API key.';
+      resultText.textContent = 'Please sign in with Google.';
       return;
     }
 
@@ -198,7 +308,8 @@ document.addEventListener('DOMContentLoaded', function() {
       const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: {
-          'X-Api-Key': apiKey
+          // Use our first-party JWT instead of requiring end users to paste API keys.
+          'Authorization': `Bearer ${jwtToken}`
         },
         body: formData,
         signal: abortController.signal
@@ -235,7 +346,8 @@ document.addEventListener('DOMContentLoaded', function() {
             const c2paResponse = await fetch(`${FLASK_BACKEND_URL}/api/c2pa`, {
               method: 'POST',
               headers: {
-                'X-Api-Key': apiKey
+                // Reuse JWT for all protected backend endpoints.
+                'Authorization': `Bearer ${jwtToken}`
               },
               body: formData,
               signal: abortController.signal
@@ -337,8 +449,19 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 
   // --- Retrieve data from chrome.storage.local when popup loads ---
-  chrome.storage.local.get(['selectedImageSrcUrl', 'selectedImageData', 'selectedImageFileName'], function(result) {
+  chrome.storage.local.get(['selectedImageSrcUrl', 'selectedImageData', 'selectedImageFileName', 'analysisError'], function(result) {
     console.log('DEBUG: popup.js trying to retrieve data from chrome.storage.local. Result:', result);
+
+    if (result.analysisError) {
+      resultsDiv.classList.remove('hidden');
+      resultText.textContent = result.analysisError;
+      chrome.storage.local.remove(['analysisError'], function() {
+        if (chrome.runtime.lastError) {
+          console.error('DEBUG: Error clearing analysisError:', chrome.runtime.lastError.message);
+        }
+      });
+    }
+
     if (result.selectedImageData) {
       console.log('DEBUG: Image data found in storage. Populating UI.');
       currentImageForAnalysis = result.selectedImageData;

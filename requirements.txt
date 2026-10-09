@@ -15,3 +15,5 @@ onnxruntime
 psycopg2-binary
 gunicorn
 c2pa-python
+google-auth
+PyJWT

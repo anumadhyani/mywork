@@ -8,12 +8,18 @@ import sqlite3
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+import urllib.parse
+import urllib.request
 
 from flask import Flask, jsonify, request, g
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+import jwt
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import id_token as google_id_token
 
 from model import DEFAULT_MODEL_PATH, predict_image
 
@@ -35,6 +41,15 @@ _API_KEY_HMAC_ENV_PREFIX = "API_KEY_HMAC_SECRET_V"
 _ADMIN_IP_ALLOWLIST = os.getenv("ADMIN_IP_ALLOWLIST", "")
 
 _API_IP_SAFETY_LIMIT = os.getenv("API_IP_SAFETY_LIMIT", "60 per minute")
+_PUBLIC_C2PA_IP_LIMIT = os.getenv("PUBLIC_C2PA_IP_LIMIT", "15 per minute")
+
+# --- First-party JWT auth (issued after Google sign-in) ---
+_JWT_SECRET = os.getenv("JWT_SECRET", "")
+_JWT_ISSUER = os.getenv("JWT_ISSUER", "mywork")
+_JWT_AUDIENCE = os.getenv("JWT_AUDIENCE", "mywork")
+_GOOGLE_ALLOWED_CLIENT_IDS = [
+    s.strip() for s in os.getenv("GOOGLE_ALLOWED_CLIENT_IDS", "").split(",") if s.strip()
+]
 
 _auth_schema_ready = False
 
@@ -83,6 +98,194 @@ def _parse_api_key(raw_key: str):
 
 def _hmac_sha256(secret: str, msg: str) -> str:
     return hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+# --- JWT helpers ---
+def _jwt_enabled() -> bool:
+    # If JWT_SECRET isn't set, we keep the API-key auth path working but disable JWT issuance/verification.
+    return bool((_JWT_SECRET or "").strip())
+
+
+def _issue_jwt(sub: str, email: str | None, name: str | None, picture: str | None):
+    if not _jwt_enabled():
+        return None
+
+    now = datetime.now(timezone.utc)
+    # Default: 7 days so the extension/mobile can stay logged in.
+    exp = now + timedelta(hours=int(os.getenv("JWT_TTL_HOURS", "168")))
+    payload = {
+        "iss": _JWT_ISSUER,
+        "aud": _JWT_AUDIENCE,
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+        "sub": sub,
+        "email": email,
+        "name": name,
+        "picture": picture,
+    }
+    token = jwt.encode(payload, _JWT_SECRET, algorithm="HS256")
+    return {"access_token": token, "token_type": "bearer", "expires_at": exp.isoformat()}
+
+
+def _verify_bearer_jwt() -> dict | None:
+    if not _jwt_enabled():
+        return None
+
+    # Accept first-party JWTs via Authorization: Bearer <jwt>
+    auth = (request.headers.get("Authorization") or "").strip()
+    if not auth.lower().startswith("bearer "):
+        return None
+
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+
+    try:
+        payload = jwt.decode(
+            token,
+            _JWT_SECRET,
+            algorithms=["HS256"],
+            audience=_JWT_AUDIENCE,
+            issuer=_JWT_ISSUER,
+        )
+        return payload
+    except Exception:
+        return None
+
+
+# --- Google token verification helpers ---
+def _google_tokeninfo(access_token: str) -> dict | None:
+    # We use the tokeninfo endpoint to validate the Google access token returned by chrome.identity.
+    at = (access_token or "").strip()
+    if not at:
+        return None
+
+    url = "https://oauth2.googleapis.com/tokeninfo?" + urllib.parse.urlencode({"access_token": at})
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        if data.get("error"):
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def _verify_google_id_token(id_token: str) -> dict | None:
+    # If clients provide an ID token instead of an access token, verify its signature and claims.
+    tok = (id_token or "").strip()
+    if not tok:
+        return None
+
+    try:
+        req = GoogleAuthRequest()
+        info = google_id_token.verify_oauth2_token(tok, req)
+        if not isinstance(info, dict):
+            return None
+        aud = info.get("aud")
+        if _GOOGLE_ALLOWED_CLIENT_IDS and aud not in _GOOGLE_ALLOWED_CLIENT_IDS:
+            return None
+        return info
+    except Exception:
+        return None
+
+
+# --- Auth endpoint: exchange Google token -> first-party JWT ---
+@app.post("/auth/google")
+@limiter.limit("20 per minute")
+def auth_google():
+    if not _jwt_enabled():
+        return jsonify({"error": "jwt_not_configured"}), 500
+
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "invalid_request"}), 400
+
+    idt = body.get("id_token")
+    at = body.get("access_token")
+
+    info = None
+    if isinstance(idt, str) and idt.strip():
+        # Prefer ID token flow when available (strong audience checks, richer profile claims).
+        info = _verify_google_id_token(idt)
+        if info is None:
+            return jsonify({"error": "invalid_google_token"}), 401
+
+        sub = str(info.get("sub") or "")
+        if not sub:
+            return jsonify({"error": "invalid_google_token"}), 401
+
+        token = _issue_jwt(
+            sub=f"google:{sub}",
+            email=info.get("email"),
+            name=info.get("name"),
+            picture=info.get("picture"),
+        )
+        return jsonify(token)
+
+    if isinstance(at, str) and at.strip():
+        # chrome.identity returns an access token; validate it with tokeninfo and mint our JWT.
+        ti = _google_tokeninfo(at)
+        if ti is None:
+            return jsonify({"error": "invalid_google_token"}), 401
+
+        sub = str(ti.get("user_id") or "")
+        if not sub:
+            return jsonify({"error": "invalid_google_token"}), 401
+
+        token = _issue_jwt(
+            sub=f"google:{sub}",
+            email=ti.get("email"),
+            name=None,
+            picture=None,
+        )
+        return jsonify(token)
+
+    return jsonify({"error": "missing_google_token"}), 400
+
+
+def _handle_c2pa_request():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part", "status": "failure"}), 400
+
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No selected file", "status": "failure"}), 400
+
+    suffix = os.path.splitext(f.filename)[1] or ".jpg"
+    tmp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            f.save(tmp_path)
+
+        try:
+            import c2pa  # type: ignore
+        except Exception as e:
+            return jsonify({"error": f"c2pa-python is not available: {str(e)}", "status": "failure"}), 500
+
+        settings = None
+        verify = request.args.get("verify", "false").lower() in ("1", "true", "yes")
+        if verify:
+            settings = c2pa.Settings.from_dict({"verify": {"verify_cert_anchors": False}})
+
+        with c2pa.Context(settings) as context:
+            with c2pa.Reader(tmp_path, context=context) as reader:
+                detailed = reader.detailed_json()
+
+        return jsonify({"status": "success", "c2pa": detailed})
+    except Exception as e:
+        return jsonify({"error": f"C2PA read failed: {str(e)}", "status": "failure"}), 500
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _admin_allowlisted(ip: str) -> bool:
@@ -461,11 +664,22 @@ def _auth_before_request():
     if path.startswith("/health") or path.startswith("/privacy"):
         return None
 
+    if path.startswith("/public/") or path.startswith("/auth/"):
+        # Public endpoints (and the Google->JWT exchange endpoint) do not require API key / JWT.
+        return None
+
     if path.startswith("/api/") or path == "/predict":
+        # Prefer first-party JWT if present; fall back to API keys for backwards compatibility.
+        jwt_payload = _verify_bearer_jwt()
+        if jwt_payload is not None:
+            g.user_sub = jwt_payload.get("sub")
+            g.user_email = jwt_payload.get("email")
+            return None
+
         _ensure_auth_schema()
         api_key_id = _require_api_key()
         if not api_key_id:
-            return jsonify({"error": "invalid_api_key"}), 401
+            return jsonify({"error": "unauthorized"}), 401
 
     return None
 
@@ -978,44 +1192,13 @@ def predict():
 @limiter.limit(_API_IP_SAFETY_LIMIT, key_func=get_remote_address)
 @limiter.limit(_plan_limit_string, key_func=lambda: str(getattr(g, "api_key_id", "")))
 def api_c2pa():
-    if "file" not in request.files:
-        return jsonify({"error": "No file part", "status": "failure"}), 400
+    return _handle_c2pa_request()
 
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "No selected file", "status": "failure"}), 400
 
-    suffix = os.path.splitext(f.filename)[1] or ".jpg"
-    tmp_path = None
-
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp_path = tmp.name
-            f.save(tmp_path)
-
-        try:
-            import c2pa  # type: ignore
-        except Exception as e:
-            return jsonify({"error": f"c2pa-python is not available: {str(e)}", "status": "failure"}), 500
-
-        settings = None
-        verify = request.args.get("verify", "false").lower() in ("1", "true", "yes")
-        if verify:
-            settings = c2pa.Settings.from_dict({"verify": {"verify_cert_anchors": False}})
-
-        with c2pa.Context(settings) as context:
-            with c2pa.Reader(tmp_path, context=context) as reader:
-                detailed = reader.detailed_json()
-
-        return jsonify({"status": "success", "c2pa": detailed})
-    except Exception as e:
-        return jsonify({"error": f"C2PA read failed: {str(e)}", "status": "failure"}), 500
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+@app.post("/public/c2pa")
+@limiter.limit(_PUBLIC_C2PA_IP_LIMIT, key_func=get_remote_address)
+def public_c2pa():
+    return _handle_c2pa_request()
 
 
 @app.post("/api/ai-detect")

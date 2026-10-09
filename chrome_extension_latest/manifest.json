@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Image Analysis Extension",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Analyze images for AI generation or forensic manipulation.",
   "action": {
     "default_popup": "popup.html",
@@ -13,9 +13,18 @@
   },
   "permissions": [
     "contextMenus",
+    "identity",
     "permissions",
     "storage"
   ],
+  "oauth2": {
+    "client_id": "536678576997-77ug09mkvgj9b9m6cejc99hsdphm0fom.apps.googleusercontent.com",
+    "scopes": [
+      "openid",
+      "email",
+      "profile"
+    ]
+  },
   "host_permissions": [
     "https://mywork-production.up.railway.app/*"
   ],
