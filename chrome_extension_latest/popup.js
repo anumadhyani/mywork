@@ -12,6 +12,9 @@ document.addEventListener('DOMContentLoaded', function() {
   const signInButton = document.getElementById('signInButton');
   const signOutButton = document.getElementById('signOutButton');
   const authStatus = document.getElementById('authStatus');
+  const authStatusSignedIn = document.getElementById('authStatusSignedIn');
+  const signedOutView = document.getElementById('signedOutView');
+  const signedInView = document.getElementById('signedInView');
 
   // Variable to store image data from context menu, if any
   let currentImageForAnalysis = null;
@@ -23,10 +26,24 @@ document.addEventListener('DOMContentLoaded', function() {
   // --- Google Sign-In + first-party JWT handling ---
   function _setAuthUi(jwtToken, email) {
     const isAuthed = !!jwtToken;
-    if (signInButton) signInButton.classList.toggle('hidden', isAuthed);
-    if (signOutButton) signOutButton.classList.toggle('hidden', !isAuthed);
-    if (authStatus) {
-      authStatus.textContent = isAuthed ? (`Signed in${email ? ` as ${email}` : ''}.`) : 'Not signed in.';
+
+    // Signed-out: only show the Sign in button.
+    if (signedOutView) signedOutView.classList.toggle('hidden', isAuthed);
+
+    // Signed-in: show analyze UI + Sign out button.
+    if (signedInView) signedInView.classList.toggle('hidden', !isAuthed);
+
+    // Status copy is intentionally minimal; the visual state is the primary cue.
+    const statusText = isAuthed ? (`Signed in${email ? ` as ${email}` : ''}.`) : 'Sign in to analyze images.';
+    if (authStatus) authStatus.textContent = isAuthed ? '' : statusText;
+    if (authStatusSignedIn) authStatusSignedIn.textContent = isAuthed ? statusText : '';
+
+    // Reset analysis UI when switching to signed-out state.
+    if (!isAuthed) {
+      if (loadingIndicator) loadingIndicator.classList.add('hidden');
+      if (resultsDiv) resultsDiv.classList.add('hidden');
+      if (resultText) resultText.textContent = '';
+      if (resultImages) resultImages.innerHTML = '';
     }
   }
 
