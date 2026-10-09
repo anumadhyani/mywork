@@ -174,6 +174,31 @@ def _google_tokeninfo(access_token: str) -> dict | None:
         return None
 
 
+def _google_userinfo(access_token: str) -> dict | None:
+    # Fallback: tokeninfo for access_token doesn't always include a stable user identifier.
+    # The userinfo endpoint returns `sub` (OpenID Connect subject) when the right scopes are present.
+    at = (access_token or "").strip()
+    if not at:
+        return None
+
+    req = urllib.request.Request(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {at}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read().decode("utf-8")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        if data.get("error"):
+            return None
+        return data
+    except Exception:
+        return None
+
+
 def _verify_google_id_token(id_token: str) -> dict | None:
     # If clients provide an ID token instead of an access token, verify its signature and claims.
     tok = (id_token or "").strip()
@@ -232,13 +257,20 @@ def auth_google():
         if ti is None:
             return jsonify({"error": "invalid_google_token"}), 401
 
+        # tokeninfo may not include `user_id` for all token types; use userinfo as a reliable fallback.
         sub = str(ti.get("user_id") or "")
+        email = ti.get("email")
+        if not sub:
+            ui = _google_userinfo(at)
+            if ui is not None:
+                sub = str(ui.get("sub") or ui.get("id") or "")
+                email = ui.get("email") or email
         if not sub:
             return jsonify({"error": "invalid_google_token"}), 401
 
         token = _issue_jwt(
             sub=f"google:{sub}",
-            email=ti.get("email"),
+            email=email,
             name=None,
             picture=None,
         )
