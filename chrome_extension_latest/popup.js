@@ -188,6 +188,13 @@ document.addEventListener('DOMContentLoaded', function() {
     return `The image result is: ${tag}.`;
   }
 
+  // --- Result copy helpers (keep output consistent across model + C2PA enrichments) ---
+  function _sentenceWithOrigin(baseSentence, origin) {
+    // Preserve the model-derived sentence and append provenance if available.
+    if (!origin) return baseSentence;
+    return `${baseSentence} Source: ${origin}.`;
+  }
+
   function _c2paOrigin(detailed) {
     if (!detailed) return null;
 
@@ -353,7 +360,8 @@ document.addEventListener('DOMContentLoaded', function() {
       if (data.status === 'success') {
         if (analysisType === 'ai_detect') {
           const tag = _normalizeAiTag(data.prediction);
-          resultText.textContent = _sentenceFromTag(tag);
+          const baseSentence = _sentenceFromTag(tag);
+          resultText.textContent = baseSentence;
           // Display original image thumbnail. If it's a manual file upload, create an object URL.
           // Store the object URL for later revocation.
           const imgSrc = isBase64Input ? fileOrBase64Data : (objectUrlToRevoke = URL.createObjectURL(fileToUpload));
@@ -373,7 +381,7 @@ document.addEventListener('DOMContentLoaded', function() {
               const c2paData = await c2paResponse.json();
               const origin = (c2paData && c2paData.status === 'success') ? _c2paOrigin(c2paData.c2pa) : null;
               if (origin) {
-                resultText.textContent = `The image is likely AI-generated. The source for the image is: ${origin}.`;
+                resultText.textContent = _sentenceWithOrigin(baseSentence, origin);
               }
             }
           } catch (e) {
