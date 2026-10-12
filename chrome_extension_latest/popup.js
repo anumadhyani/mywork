@@ -182,9 +182,29 @@ document.addEventListener('DOMContentLoaded', function() {
     return prediction || 'Unknown';
   }
 
+  // --- Prefer structured backend fields over string heuristics ---
+  function _tagFromBackendResult(data) {
+    // `band` is the most reliable: ai/likely_ai/uncertain/likely_real/real
+    const band = (data && data.band ? String(data.band) : '').toLowerCase();
+    if (band === 'ai' || band === 'likely_ai') return 'AI';
+    if (band === 'real' || band === 'likely_real') return 'Real';
+    if (band === 'uncertain') return 'Uncertain';
+
+    // Fall back to the human label if present.
+    const predLabel = (data && data.prediction ? String(data.prediction) : '');
+    const p = predLabel.toLowerCase();
+    if (p.includes('uncertain')) return 'Uncertain';
+    if (p.includes('likely ai') || p === 'ai') return 'AI';
+    if (p.includes('likely real') || p === 'real') return 'Real';
+
+    // Final fallback: existing heuristic.
+    return _normalizeAiTag(predLabel);
+  }
+
   function _sentenceFromTag(tag) {
     if (tag === 'AI') return 'The image is likely AI-generated.';
     if (tag === 'Real') return 'The image is likely real.';
+    if (tag === 'Uncertain') return 'The result is uncertain.';
     return `The image result is: ${tag}.`;
   }
 
@@ -359,7 +379,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
       if (data.status === 'success') {
         if (analysisType === 'ai_detect') {
-          const tag = _normalizeAiTag(data.prediction);
+          // Use band/label from the backend (more reliable than matching free-form text).
+          const tag = _tagFromBackendResult(data);
           const baseSentence = _sentenceFromTag(tag);
           resultText.textContent = baseSentence;
           // Display original image thumbnail. If it's a manual file upload, create an object URL.
