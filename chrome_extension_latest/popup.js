@@ -24,6 +24,13 @@ document.addEventListener('DOMContentLoaded', function() {
   const FLASK_BACKEND_URL = 'https://mywork-production.up.railway.app';
 
   // --- Google Sign-In + first-party JWT handling ---
+  function _showAuthError(message) {
+    // Auth errors should be visible even when the signed-in view is hidden.
+    if (authStatus) {
+      authStatus.textContent = message || 'Sign-in failed.';
+    }
+  }
+
   function _setAuthUi(jwtToken, email) {
     const isAuthed = !!jwtToken;
 
@@ -138,10 +145,11 @@ document.addEventListener('DOMContentLoaded', function() {
   if (signInButton) {
     signInButton.addEventListener('click', async function() {
       try {
+        console.log('DEBUG: Sign-in button clicked.');
         await _signInInteractive();
       } catch (e) {
-        resultsDiv.classList.remove('hidden');
-        resultText.textContent = `Sign-in failed: ${e.message}`;
+        console.error('ERROR: Sign-in failed:', e);
+        _showAuthError(`Sign-in failed: ${e && e.message ? e.message : 'unknown_error'}`);
       }
     });
   }
@@ -151,8 +159,8 @@ document.addEventListener('DOMContentLoaded', function() {
       try {
         await _signOut();
       } catch (e) {
-        resultsDiv.classList.remove('hidden');
-        resultText.textContent = `Sign-out failed: ${e.message}`;
+        console.error('ERROR: Sign-out failed:', e);
+        _showAuthError(`Sign-out failed: ${e && e.message ? e.message : 'unknown_error'}`);
       }
     });
   }
