@@ -346,13 +346,14 @@ def main() -> None:
 
     # --- Online classifier (logistic regression via SGD) ---
     # We use partial_fit so we never need to store all embeddings in memory.
+    # NOTE: Some sklearn versions do not support class_weight='balanced' with partial_fit.
+    # We implement balanced weighting by passing sample_weight per batch instead.
     clf = SGDClassifier(
         loss="log_loss",
         penalty="l2",
         alpha=1e-4,
         max_iter=1,
         tol=None,
-        class_weight=(None if args.class_weight == "none" else "balanced"),
     )
     classes = np.asarray([0, 1], dtype=np.int64)
 
@@ -374,6 +375,19 @@ def main() -> None:
     # --- Real embedding pool for oversampling ---
     # Stores embeddings only (not images) to allow 1:1 balancing against AI during streaming.
     real_pool: list[np.ndarray] = []
+
+    def batch_sample_weight(y: np.ndarray) -> np.ndarray | None:
+        if args.class_weight == "none":
+            return None
+        n = int(y.size)
+        n0 = int((y == 0).sum())
+        n1 = int((y == 1).sum())
+        if n0 == 0 or n1 == 0:
+            return None
+        # Standard balanced weights: n / (n_classes * n_c)
+        w0 = n / (2.0 * n0)
+        w1 = n / (2.0 * n1)
+        return np.where(y == 0, w0, w1).astype(np.float64)
 
     for epoch in range(max(1, int(args.epochs))):
         pil_batch = []
@@ -428,7 +442,11 @@ def main() -> None:
                     cal_y.append(y)
                     cal_seen += int(y.size)
                 else:
-                    clf.partial_fit(X, y, classes=classes)
+                    sw = batch_sample_weight(y)
+                    if sw is None:
+                        clf.partial_fit(X, y, classes=classes)
+                    else:
+                        clf.partial_fit(X, y, classes=classes, sample_weight=sw)
                     seen_fit += int(y.size)
 
                 pil_batch = []
@@ -463,7 +481,11 @@ def main() -> None:
                 cal_y.append(y)
                 cal_seen += int(y.size)
             else:
-                clf.partial_fit(X, y, classes=classes)
+                sw = batch_sample_weight(y)
+                if sw is None:
+                    clf.partial_fit(X, y, classes=classes)
+                else:
+                    clf.partial_fit(X, y, classes=classes, sample_weight=sw)
                 seen_fit += int(y.size)
 
     print("Train done")
