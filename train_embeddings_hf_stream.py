@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import joblib
 import numpy as np
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 
@@ -151,6 +152,77 @@ def _export_onnx(model, out_path: str):
     )
 
 
+def _report_precision_coverage(y_true: np.ndarray, p_ai: np.ndarray, target_precision: float):
+    # --- Threshold selection for production-style gating ---
+    # We choose:
+    # - AI when p_ai >= t_ai
+    # - Real when p_ai <= t_real
+    # - otherwise Uncertain
+    # with both AI and Real precision >= target_precision.
+
+    if y_true.size == 0:
+        return
+
+    # AI: precision among predicted AI.
+    order = np.argsort(-p_ai)
+    y_sorted = y_true[order]
+    p_sorted = p_ai[order]
+
+    cum_pred_ai = np.arange(1, y_sorted.size + 1)
+    cum_true_ai = np.cumsum(y_sorted == 1)
+    prec_ai = cum_true_ai / np.maximum(cum_pred_ai, 1)
+
+    ai_idx = np.where(prec_ai >= target_precision)[0]
+    t_ai = None
+    if ai_idx.size > 0:
+        # Take the lowest threshold that still meets precision (max coverage).
+        k = int(ai_idx[-1])
+        t_ai = float(p_sorted[k])
+
+    # Real: precision among predicted Real => y_true == 0.
+    order_r = np.argsort(p_ai)
+    y_sorted_r = y_true[order_r]
+    p_sorted_r = p_ai[order_r]
+
+    cum_pred_real = np.arange(1, y_sorted_r.size + 1)
+    cum_true_real = np.cumsum(y_sorted_r == 0)
+    prec_real = cum_true_real / np.maximum(cum_pred_real, 1)
+
+    real_idx = np.where(prec_real >= target_precision)[0]
+    t_real = None
+    if real_idx.size > 0:
+        k = int(real_idx[-1])
+        t_real = float(p_sorted_r[k])
+
+    if t_ai is None or t_real is None:
+        print(f"No thresholds found to achieve precision>={target_precision:.3f} for both classes")
+        return
+
+    pred_ai = p_ai >= t_ai
+    pred_real = p_ai <= t_real
+    pred_unc = ~(pred_ai | pred_real)
+
+    def safe_precision(mask: np.ndarray, positive_label: int):
+        denom = int(mask.sum())
+        if denom == 0:
+            return 0.0, 0
+        num = int(((y_true == positive_label) & mask).sum())
+        return num / denom, denom
+
+    prec_ai_final, n_ai = safe_precision(pred_ai, 1)
+    prec_real_final, n_real = safe_precision(pred_real, 0)
+    coverage = 1.0 - (pred_unc.sum() / y_true.size)
+
+    print("\nHigh-precision gating report")
+    print("Target precision:", target_precision)
+    print("AI threshold (p_ai >=):", f"{t_ai:.4f}")
+    print("Real threshold (p_ai <=):", f"{t_real:.4f}")
+    print("AI precision:", f"{prec_ai_final:.4f}", "n=", n_ai)
+    print("Real precision:", f"{prec_real_final:.4f}", "n=", n_real)
+    print("Coverage (non-uncertain):", f"{coverage:.4f}")
+    print("Uncertain n=", int(pred_unc.sum()))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -165,6 +237,36 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", default="cpu", choices=["cpu", "mps"])
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=1,
+        help="Number of streaming passes over the training split (re-iterates the HF stream).",
+    )
+    parser.add_argument(
+        "--class-weight",
+        choices=["none", "balanced"],
+        default="balanced",
+        help="Use class weighting to reduce majority-class bias (recommended: balanced).",
+    )
+    parser.add_argument(
+        "--calibrate",
+        choices=["none", "sigmoid"],
+        default="sigmoid",
+        help="Optional probability calibration using a small streamed calibration buffer.",
+    )
+    parser.add_argument(
+        "--calibration-n",
+        type=int,
+        default=2000,
+        help="Number of streamed training examples to reserve for calibration (embeddings only).",
+    )
+    parser.add_argument(
+        "--target-precision",
+        type=float,
+        default=0.95,
+        help="Target precision for both classes when reporting conservative Real/AI thresholds.",
+    )
 
     parser.add_argument(
         "--clf-out",
@@ -187,7 +289,14 @@ def main() -> None:
 
     # --- Online classifier (logistic regression via SGD) ---
     # We use partial_fit so we never need to store all embeddings in memory.
-    clf = SGDClassifier(loss="log_loss", penalty="l2", alpha=1e-4, max_iter=1, tol=None)
+    clf = SGDClassifier(
+        loss="log_loss",
+        penalty="l2",
+        alpha=1e-4,
+        max_iter=1,
+        tol=None,
+        class_weight=(None if args.class_weight == "none" else "balanced"),
+    )
     classes = np.asarray([0, 1], dtype=np.int64)
 
     # --- Shared embedder (reuse one MobileNet instance for train + test) ---
@@ -196,53 +305,84 @@ def main() -> None:
     def embed_batch(pil_images: list):
         return _embed_batch(model, preprocess, device=device, pil_images=pil_images)
 
-    # --- Train loop ---
+    # --- Train loop (optionally reserve a calibration buffer) ---
     print("Streaming train split:", args.train_split)
     seen_train = 0
     skipped_train = 0
-    pil_batch: list = []
-    y_batch: list[int] = []
+    seen_fit = 0
+    cal_X: list[np.ndarray] = []
+    cal_y: list[np.ndarray] = []
 
-    for ex in _iter_stream(args.dataset, split=args.train_split, seed=args.seed):
-        if args.limit_train and seen_train >= args.limit_train:
-            break
+    for epoch in range(max(1, int(args.epochs))):
+        pil_batch = []
+        y_batch: list[int] = []
+        print("Epoch:", epoch + 1, "/", max(1, int(args.epochs)))
 
-        img_obj, label_a = _get_cols(ex)
-        if label_a not in (0, 1):
-            skipped_train += 1
-            continue
+        for ex in _iter_stream(args.dataset, split=args.train_split, seed=args.seed + epoch):
+            if args.limit_train and seen_train >= args.limit_train:
+                break
 
-        pil = _load_image_pil(img_obj)
-        if pil is None:
-            skipped_train += 1
-            continue
+            img_obj, label_a = _get_cols(ex)
+            if label_a not in (0, 1):
+                skipped_train += 1
+                continue
 
-        pil_batch.append(pil)
-        y_batch.append(int(label_a))
-        seen_train += 1
+            pil = _load_image_pil(img_obj)
+            if pil is None:
+                skipped_train += 1
+                continue
 
-        if len(pil_batch) >= args.batch_size:
+            pil_batch.append(pil)
+            y_batch.append(int(label_a))
+            seen_train += 1
+
+            if len(pil_batch) >= args.batch_size:
+                X = embed_batch(pil_batch)
+                y = np.asarray(y_batch, dtype=np.int64)
+
+                # Reserve a calibration buffer from the first epoch only.
+                if args.calibrate != "none" and epoch == 0 and (seen_fit < args.calibration_n):
+                    cal_X.append(X)
+                    cal_y.append(y)
+                else:
+                    clf.partial_fit(X, y, classes=classes)
+                    seen_fit += int(y.size)
+
+                pil_batch = []
+                y_batch = []
+
+                if (seen_train % (args.batch_size * 50)) == 0:
+                    print(f"Trained on {seen_train} streamed examples...")
+
+        if pil_batch:
             X = embed_batch(pil_batch)
             y = np.asarray(y_batch, dtype=np.int64)
-            clf.partial_fit(X, y, classes=classes)
-            pil_batch = []
-            y_batch = []
-
-            if (seen_train % (args.batch_size * 50)) == 0:
-                print(f"Trained on {seen_train} examples...")
-
-    if pil_batch:
-        X = embed_batch(pil_batch)
-        y = np.asarray(y_batch, dtype=np.int64)
-        clf.partial_fit(X, y, classes=classes)
+            if args.calibrate != "none" and epoch == 0 and (seen_fit < args.calibration_n):
+                cal_X.append(X)
+                cal_y.append(y)
+            else:
+                clf.partial_fit(X, y, classes=classes)
+                seen_fit += int(y.size)
 
     print("Train done")
-    print("Train examples:", seen_train, "skipped:", skipped_train)
+    print("Train streamed examples:", seen_train, "skipped:", skipped_train)
+    print("Train fit examples:", seen_fit)
+
+    # --- Optional probability calibration ---
+    final_clf = clf
+    cal_n = int(sum(int(x.shape[0]) for x in cal_X))
+    if args.calibrate != "none" and cal_n > 0:
+        X_cal = np.vstack(cal_X)
+        y_cal = np.concatenate(cal_y)
+        final_clf = CalibratedClassifierCV(clf, method=args.calibrate, cv="prefit")
+        final_clf.fit(X_cal, y_cal)
+        print("Calibrated probabilities with:", args.calibrate, "n_cal=", cal_n)
 
     # --- Evaluate loop ---
     print("Streaming test split:", args.test_split)
     y_true: list[int] = []
     y_pred: list[int] = []
+    p_ai_list: list[float] = []
     seen_test = 0
     skipped_test = 0
     pil_batch = []
@@ -268,7 +408,9 @@ def main() -> None:
 
         if len(pil_batch) >= args.batch_size:
             X = embed_batch(pil_batch)
-            yp = clf.predict(X)
+            yp = final_clf.predict(X)
+            proba = final_clf.predict_proba(X)
+            p_ai_list.extend([float(v) for v in proba[:, 1].tolist()])
             y_true.extend(y_batch)
             y_pred.extend([int(v) for v in yp.tolist()])
             pil_batch = []
@@ -276,12 +418,15 @@ def main() -> None:
 
     if pil_batch:
         X = embed_batch(pil_batch)
-        yp = clf.predict(X)
+        yp = final_clf.predict(X)
+        proba = final_clf.predict_proba(X)
+        p_ai_list.extend([float(v) for v in proba[:, 1].tolist()])
         y_true.extend(y_batch)
         y_pred.extend([int(v) for v in yp.tolist()])
 
     yt = np.asarray(y_true, dtype=np.int64)
     yp = np.asarray(y_pred, dtype=np.int64)
+    p_ai = np.asarray(p_ai_list, dtype=np.float64)
 
     print("Test examples:", len(yt), "skipped:", skipped_test)
     print("Confusion matrix:\n", confusion_matrix(yt, yp))
@@ -295,9 +440,12 @@ def main() -> None:
         )
     )
 
+    if p_ai.size == yt.size:
+        _report_precision_coverage(yt, p_ai, target_precision=float(args.target_precision))
+
     # --- Save classifier + meta (no images stored) ---
     os.makedirs(os.path.dirname(args.clf_out) or ".", exist_ok=True)
-    joblib.dump(clf, args.clf_out)
+    joblib.dump(final_clf, args.clf_out)
 
     meta = {
         "dataset": args.dataset,
@@ -306,6 +454,10 @@ def main() -> None:
         "train_examples": int(seen_train),
         "test_examples": int(len(yt)),
         "classifier": "sgd_log_loss",
+        "calibration": args.calibrate,
+        "calibration_n": int(cal_n),
+        "epochs": int(args.epochs),
+        "class_weight": args.class_weight,
         "batch_size": int(args.batch_size),
         "device": device,
         "classifier_path": args.clf_out,
