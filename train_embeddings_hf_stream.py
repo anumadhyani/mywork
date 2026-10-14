@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import joblib
 import numpy as np
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 
@@ -234,6 +234,40 @@ def _report_precision_coverage(y_true: np.ndarray, p_ai: np.ndarray, target_prec
     print("Uncertain n=", int(pred_unc.sum()))
 
 
+class _SigmoidCalibratedBinaryClassifier:
+    # --- Simple Platt scaling (sigmoid calibration) ---
+    # Fits a 1D logistic regression on the base model's score.
+    # This avoids sklearn's CalibratedClassifierCV(cv='prefit') compatibility issues.
+
+    def __init__(self, base_estimator, calibrator: LogisticRegression):
+        self.base_estimator = base_estimator
+        self.calibrator = calibrator
+
+    def _scores(self, X: np.ndarray) -> np.ndarray:
+        if hasattr(self.base_estimator, "decision_function"):
+            s = self.base_estimator.decision_function(X)
+            return np.asarray(s).reshape(-1, 1)
+        if hasattr(self.base_estimator, "predict_proba"):
+            p = self.base_estimator.predict_proba(X)
+            p_ai = np.asarray(p)[:, 1]
+            eps = 1e-6
+            p_ai = np.clip(p_ai, eps, 1.0 - eps)
+            logit = np.log(p_ai / (1.0 - p_ai))
+            return logit.reshape(-1, 1)
+        raise RuntimeError("Base estimator must support decision_function or predict_proba")
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        s = self._scores(X)
+        p_ai = self.calibrator.predict_proba(s)[:, 1]
+        p_ai = np.asarray(p_ai, dtype=np.float64)
+        p_real = 1.0 - p_ai
+        return np.stack([p_real, p_ai], axis=1)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        proba = self.predict_proba(X)
+        return (proba[:, 1] >= 0.5).astype(np.int64)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -335,6 +369,7 @@ def main() -> None:
     seen_fit = 0
     cal_X: list[np.ndarray] = []
     cal_y: list[np.ndarray] = []
+    cal_seen = 0
 
     # --- Real embedding pool for oversampling ---
     # Stores embeddings only (not images) to allow 1:1 balancing against AI during streaming.
@@ -388,9 +423,10 @@ def main() -> None:
                         y = np.concatenate([y, y_os], axis=0)
 
                 # Reserve a calibration buffer from the first epoch only.
-                if args.calibrate != "none" and epoch == 0 and (seen_fit < args.calibration_n):
+                if args.calibrate != "none" and epoch == 0 and (cal_seen < args.calibration_n):
                     cal_X.append(X)
                     cal_y.append(y)
+                    cal_seen += int(y.size)
                 else:
                     clf.partial_fit(X, y, classes=classes)
                     seen_fit += int(y.size)
@@ -422,9 +458,10 @@ def main() -> None:
                     X = np.concatenate([X, X_os], axis=0)
                     y = np.concatenate([y, y_os], axis=0)
 
-            if args.calibrate != "none" and epoch == 0 and (seen_fit < args.calibration_n):
+            if args.calibrate != "none" and epoch == 0 and (cal_seen < args.calibration_n):
                 cal_X.append(X)
                 cal_y.append(y)
+                cal_seen += int(y.size)
             else:
                 clf.partial_fit(X, y, classes=classes)
                 seen_fit += int(y.size)
@@ -439,9 +476,22 @@ def main() -> None:
     if args.calibrate != "none" and cal_n > 0:
         X_cal = np.vstack(cal_X)
         y_cal = np.concatenate(cal_y)
-        final_clf = CalibratedClassifierCV(clf, method=args.calibrate, cv="prefit")
-        final_clf.fit(X_cal, y_cal)
-        print("Calibrated probabilities with:", args.calibrate, "n_cal=", cal_n)
+        if args.calibrate != "sigmoid":
+            raise RuntimeError("Only 'sigmoid' calibration is supported in streaming mode")
+
+        scores = None
+        if hasattr(clf, "decision_function"):
+            scores = np.asarray(clf.decision_function(X_cal)).reshape(-1, 1)
+        else:
+            proba = np.asarray(clf.predict_proba(X_cal))[:, 1]
+            eps = 1e-6
+            proba = np.clip(proba, eps, 1.0 - eps)
+            scores = np.log(proba / (1.0 - proba)).reshape(-1, 1)
+
+        calibrator = LogisticRegression(max_iter=2000)
+        calibrator.fit(scores, y_cal)
+        final_clf = _SigmoidCalibratedBinaryClassifier(base_estimator=clf, calibrator=calibrator)
+        print("Calibrated probabilities with: sigmoid (platt scaling)", "n_cal=", cal_n)
 
     # --- Evaluate loop ---
     print("Streaming test split:", args.test_split)
