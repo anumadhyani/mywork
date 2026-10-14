@@ -63,6 +63,17 @@ def _get_cols(example: dict) -> tuple[object | None, int | None]:
     return img, label_i
 
 
+def _get_label_b(example: dict) -> int | None:
+    # Optional: generator/source label for AI images (Defactify uses Label_B).
+    for k in ("Label_B", "label_b", "labelB"):
+        if k in example:
+            try:
+                return int(example.get(k))
+            except Exception:
+                return None
+    return None
+
+
 def _load_image_pil(img_obj):
     # HF Image feature returns a PIL-like object with .convert/.save.
     if hasattr(img_obj, "convert"):
@@ -267,6 +278,18 @@ def main() -> None:
         default=0.95,
         help="Target precision for both classes when reporting conservative Real/AI thresholds.",
     )
+    parser.add_argument(
+        "--oversample-real",
+        choices=["none", "match_ai"],
+        default="match_ai",
+        help="Mitigate class imbalance by oversampling Real embeddings during training (no image storage).",
+    )
+    parser.add_argument(
+        "--real-pool-size",
+        type=int,
+        default=20000,
+        help="Max number of real embeddings to keep in memory for oversampling.",
+    )
 
     parser.add_argument(
         "--clf-out",
@@ -313,6 +336,10 @@ def main() -> None:
     cal_X: list[np.ndarray] = []
     cal_y: list[np.ndarray] = []
 
+    # --- Real embedding pool for oversampling ---
+    # Stores embeddings only (not images) to allow 1:1 balancing against AI during streaming.
+    real_pool: list[np.ndarray] = []
+
     for epoch in range(max(1, int(args.epochs))):
         pil_batch = []
         y_batch: list[int] = []
@@ -340,6 +367,26 @@ def main() -> None:
                 X = embed_batch(pil_batch)
                 y = np.asarray(y_batch, dtype=np.int64)
 
+                # --- Update pool with any real embeddings in this batch ---
+                if args.oversample_real != "none":
+                    real_mask = y == 0
+                    if np.any(real_mask):
+                        X_real = X[real_mask]
+                        for r in X_real:
+                            if len(real_pool) < int(args.real_pool_size):
+                                real_pool.append(r.astype(np.float32, copy=False))
+
+                # --- Optionally oversample real to match AI count (1:1) ---
+                if args.oversample_real == "match_ai" and len(real_pool) > 0:
+                    n_ai = int((y == 1).sum())
+                    if n_ai > 0:
+                        # Sample real embeddings with replacement.
+                        idx = np.random.randint(0, len(real_pool), size=n_ai)
+                        X_os = np.stack([real_pool[j] for j in idx], axis=0)
+                        y_os = np.zeros((n_ai,), dtype=np.int64)
+                        X = np.concatenate([X, X_os], axis=0)
+                        y = np.concatenate([y, y_os], axis=0)
+
                 # Reserve a calibration buffer from the first epoch only.
                 if args.calibrate != "none" and epoch == 0 and (seen_fit < args.calibration_n):
                     cal_X.append(X)
@@ -357,6 +404,24 @@ def main() -> None:
         if pil_batch:
             X = embed_batch(pil_batch)
             y = np.asarray(y_batch, dtype=np.int64)
+
+            if args.oversample_real != "none":
+                real_mask = y == 0
+                if np.any(real_mask):
+                    X_real = X[real_mask]
+                    for r in X_real:
+                        if len(real_pool) < int(args.real_pool_size):
+                            real_pool.append(r.astype(np.float32, copy=False))
+
+            if args.oversample_real == "match_ai" and len(real_pool) > 0:
+                n_ai = int((y == 1).sum())
+                if n_ai > 0:
+                    idx = np.random.randint(0, len(real_pool), size=n_ai)
+                    X_os = np.stack([real_pool[j] for j in idx], axis=0)
+                    y_os = np.zeros((n_ai,), dtype=np.int64)
+                    X = np.concatenate([X, X_os], axis=0)
+                    y = np.concatenate([y, y_os], axis=0)
+
             if args.calibrate != "none" and epoch == 0 and (seen_fit < args.calibration_n):
                 cal_X.append(X)
                 cal_y.append(y)
