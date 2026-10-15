@@ -41,6 +41,21 @@ def _iter_stream(dataset: str, split: str, seed: int):
         yield ex
 
 
+def _iter_stream_with_shuffle(dataset: str, split: str, seed: int, shuffle: bool, shuffle_buffer: int):
+    from datasets import load_dataset  # type: ignore
+
+    ds = load_dataset(dataset, split=split, streaming=True)
+
+    if shuffle and shuffle_buffer and shuffle_buffer > 0:
+        try:
+            ds = ds.shuffle(seed=seed, buffer_size=int(shuffle_buffer))
+        except Exception:
+            pass
+
+    for ex in ds:
+        yield ex
+
+
 def _get_cols(example: dict) -> tuple[object | None, int | None]:
     # Accept both canonical and variant casing.
     img = None
@@ -283,6 +298,24 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--device", default="cpu", choices=["cpu", "mps"])
     parser.add_argument(
+        "--shuffle",
+        choices=["on", "off"],
+        default="on",
+        help="Shuffle the HF streaming dataset using a buffer (off can avoid stalls between epochs).",
+    )
+    parser.add_argument(
+        "--shuffle-buffer",
+        type=int,
+        default=2000,
+        help="Shuffle buffer size for HF streaming (smaller buffers reduce stalls / memory).",
+    )
+    parser.add_argument(
+        "--heartbeat",
+        type=int,
+        default=2000,
+        help="Print a progress heartbeat every N streamed examples (0 disables).",
+    )
+    parser.add_argument(
         "--epochs",
         type=int,
         default=1,
@@ -394,7 +427,15 @@ def main() -> None:
         y_batch: list[int] = []
         print("Epoch:", epoch + 1, "/", max(1, int(args.epochs)))
 
-        for ex in _iter_stream(args.dataset, split=args.train_split, seed=args.seed + epoch):
+        last_heartbeat = seen_train
+
+        for ex in _iter_stream_with_shuffle(
+            args.dataset,
+            split=args.train_split,
+            seed=args.seed + epoch,
+            shuffle=(args.shuffle == "on"),
+            shuffle_buffer=int(args.shuffle_buffer),
+        ):
             if args.limit_train and seen_train >= args.limit_train:
                 break
 
@@ -411,6 +452,10 @@ def main() -> None:
             pil_batch.append(pil)
             y_batch.append(int(label_a))
             seen_train += 1
+
+            if args.heartbeat and args.heartbeat > 0 and (seen_train - last_heartbeat) >= int(args.heartbeat):
+                print(f"Streamed {seen_train} train examples...")
+                last_heartbeat = seen_train
 
             if len(pil_batch) >= args.batch_size:
                 X = embed_batch(pil_batch)
