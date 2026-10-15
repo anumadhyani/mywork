@@ -211,8 +211,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
   function _sentenceFromTag(tag) {
     if (tag === 'AI') return 'The image is likely AI-generated.';
-    if (tag === 'Real') return 'The image is likely real.';
-    if (tag === 'Uncertain') return 'The result is uncertain.';
+    if (tag === 'Real') return 'No strong AI signals detected.';
+    if (tag === 'Uncertain') return 'No strong AI signals detected.';
     return `The image result is: ${tag}.`;
   }
 
@@ -389,7 +389,8 @@ document.addEventListener('DOMContentLoaded', function() {
         if (analysisType === 'ai_detect') {
           // Use band/label from the backend (more reliable than matching free-form text).
           const tag = _tagFromBackendResult(data);
-          const baseSentence = _sentenceFromTag(tag);
+          const backendPrediction = data && data.prediction ? String(data.prediction) : '';
+          const baseSentence = backendPrediction ? backendPrediction : _sentenceFromTag(tag);
           resultText.textContent = baseSentence;
           // Display original image thumbnail. If it's a manual file upload, create an object URL.
           // Store the object URL for later revocation.

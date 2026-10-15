@@ -1269,13 +1269,18 @@ def api_ai_detect():
         if isinstance(proba, list) and len(proba) >= 2:
             confidence = {"real": float(proba[0]), "fake": float(proba[1])}
 
+        band = result.get("band")
+        prediction_label = result.get("label")
+        if band in {"uncertain", "likely_real", "real"}:
+            prediction_label = "No strong AI signals detected"
+
         return jsonify(
             {
                 "status": "success",
-                "prediction": result.get("label"),
+                "prediction": prediction_label,
                 "confidence": confidence,
                 # --- Debug fields (safe for clients; no secrets) ---
-                "band": result.get("band"),
+                "band": band,
                 "uncertain": result.get("uncertain"),
                 "backend": result.get("backend"),
                 "pred": result.get("pred"),
