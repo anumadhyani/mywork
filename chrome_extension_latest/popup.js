@@ -390,7 +390,11 @@ document.addEventListener('DOMContentLoaded', function() {
           // Use band/label from the backend (more reliable than matching free-form text).
           const tag = _tagFromBackendResult(data);
           const backendPrediction = data && data.prediction ? String(data.prediction) : '';
-          const baseSentence = backendPrediction ? backendPrediction : _sentenceFromTag(tag);
+          const band = (data && data.band ? String(data.band) : '').toLowerCase();
+
+          // Force consistent UX for non-AI outcomes, even if backend still returns labels like "Uncertain".
+          const nonAiBand = (band === 'uncertain' || band === 'likely_real' || band === 'real');
+          const baseSentence = nonAiBand ? 'No strong AI signals detected.' : (backendPrediction ? backendPrediction : _sentenceFromTag(tag));
           resultText.textContent = baseSentence;
           // Display original image thumbnail. If it's a manual file upload, create an object URL.
           // Store the object URL for later revocation.
