@@ -1,0 +1,16 @@
+{
+  "dataset": "Rajarshi-Roy-research/Defactify_Image_Dataset",
+  "train_split": "train",
+  "test_split": "test",
+  "train_examples": 84000,
+  "test_examples": 20000,
+  "classifier": "sgd_log_loss",
+  "calibration": "sigmoid",
+  "calibration_n": 10090,
+  "epochs": 2,
+  "class_weight": "balanced",
+  "batch_size": 64,
+  "device": "cpu",
+  "classifier_path": "models/embedding_sgd_logreg.joblib",
+  "onnx": "models/mobilenetv3_embedding.onnx"
+}
