@@ -18,9 +18,13 @@ DEFAULT_EMBEDDING_ONNX_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "models", "mobilenetv3_embedding.onnx"),
 )
 
+_MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+_DEFAULT_SGD_CLF = os.path.join(_MODELS_DIR, "embedding_sgd_logreg.joblib")
+_DEFAULT_LOGREG_CLF = os.path.join(_MODELS_DIR, "embedding_logreg.joblib")
+
 DEFAULT_EMBEDDING_CLF_PATH = os.getenv(
     "EMBEDDING_CLF_PATH",
-    os.path.join(os.path.dirname(__file__), "models", "embedding_logreg.joblib"),
+    (_DEFAULT_SGD_CLF if os.path.exists(_DEFAULT_SGD_CLF) else _DEFAULT_LOGREG_CLF),
 )
 
 AI_THRESHOLD = float(os.getenv("AI_THRESHOLD", "0.90"))
