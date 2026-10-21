@@ -10,6 +10,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 
+from model import SigmoidCalibratedBinaryClassifier as _SigmoidCalibratedBinaryClassifier
+
 
 # --- HuggingFace streaming training (no local image storage) ---
 # Trains a lightweight classifier on MobileNetV3-Large embeddings computed on-the-fly.
@@ -247,38 +249,8 @@ def _report_precision_coverage(y_true: np.ndarray, p_ai: np.ndarray, target_prec
     print("Real precision:", f"{prec_real_final:.4f}", "n=", n_real)
     print("Coverage (non-uncertain):", f"{coverage:.4f}")
     print("Uncertain n=", int(pred_unc.sum()))
-
-
-class _SigmoidCalibratedBinaryClassifier:
-    # --- Simple Platt scaling (sigmoid calibration) ---
-    # Fits a 1D logistic regression on the base model's score.
-    # This avoids sklearn's CalibratedClassifierCV(cv='prefit') compatibility issues.
-
-    def __init__(self, base_estimator, calibrator: LogisticRegression):
-        self.base_estimator = base_estimator
-        self.calibrator = calibrator
-
-    def _scores(self, X: np.ndarray) -> np.ndarray:
-        if hasattr(self.base_estimator, "decision_function"):
-            s = self.base_estimator.decision_function(X)
-            return np.asarray(s).reshape(-1, 1)
-        if hasattr(self.base_estimator, "predict_proba"):
-            p = self.base_estimator.predict_proba(X)
-            p_ai = np.asarray(p)[:, 1]
-            eps = 1e-6
-            p_ai = np.clip(p_ai, eps, 1.0 - eps)
-            logit = np.log(p_ai / (1.0 - p_ai))
-            return logit.reshape(-1, 1)
-        raise RuntimeError("Base estimator must support decision_function or predict_proba")
-
-    def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        s = self._scores(X)
-        p_ai = self.calibrator.predict_proba(s)[:, 1]
-        p_ai = np.asarray(p_ai, dtype=np.float64)
-        p_real = 1.0 - p_ai
-        return np.stack([p_real, p_ai], axis=1)
-
-    def predict(self, X: np.ndarray) -> np.ndarray:
+#pedfismiaatCthirbility issues.
+#j_(ss_iar(:py:fbtznugats.ttan[ m6paabn _ao >f _bmra=yya
         proba = self.predict_proba(X)
         return (proba[:, 1] >= 0.5).astype(np.int64)
 

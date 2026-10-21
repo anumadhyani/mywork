@@ -27,6 +27,46 @@ DEFAULT_EMBEDDING_CLF_PATH = os.getenv(
     (_DEFAULT_SGD_CLF if os.path.exists(_DEFAULT_SGD_CLF) else _DEFAULT_LOGREG_CLF),
 )
 
+class SigmoidCalibratedBinaryClassifier:
+    """Simple Platt scaling (sigmoid calibration) wrapper.
+
+    Lives in an importable module so joblib artifacts produced by the
+    streaming trainer can be deserialized in production.
+    """
+
+    def __init__(self, base_estimator, calibrator):
+        self.base_estimator = base_estimator
+        self.calibrator = calibrator
+
+    def _scores(self, X: np.ndarray) -> np.ndarray:
+        if hasattr(self.base_estimator, "decision_function"):
+            s = self.base_estimator.decision_function(X)
+            return np.asarray(s).reshape(-1, 1)
+        if hasattr(self.base_estimator, "predict_proba"):
+            p = self.base_estimator.predict_proba(X)
+            p_ai = np.asarray(p)[:, 1]
+            eps = 1e-6
+            p_ai = np.clip(p_ai, eps, 1.0 - eps)
+            logit = np.log(p_ai / (1.0 - p_ai))
+            return logit.reshape(-1, 1)
+        raise RuntimeError("Base estimator must support decision_function or predict_proba")
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        s = self._scores(X)
+        p_ai = self.calibrator.predict_proba(s)[:, 1]
+        p_ai = np.asarray(p_ai, dtype=np.float64)
+        p_real = 1.0 - p_ai
+        return np.stack([p_real, p_ai], axis=1)
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        proba = self.predict_proba(X)
+        return (proba[:, 1] >= 0.5).astype(np.int64)
+
+
+# Back-compat alias: artifacts pickled while the class lived in __main__.
+_SigmoidCalibratedBinaryClassifier = SigmoidCalibratedBinaryClassifier
+
+
 AI_THRESHOLD = float(os.getenv("AI_THRESHOLD", "0.90"))
 LIKELY_AI_THRESHOLD = float(os.getenv("LIKELY_AI_THRESHOLD", "0.50"))
 LIKELY_REAL_THRESHOLD = float(os.getenv("LIKELY_REAL_THRESHOLD", "0.10"))
