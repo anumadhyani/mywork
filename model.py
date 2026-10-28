@@ -19,13 +19,15 @@ DEFAULT_EMBEDDING_ONNX_PATH = os.getenv(
 )
 
 _MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+_DEFAULT_SGD_CLF_V2 = os.path.join(_MODELS_DIR, "embedding_sgd_logreg_v2.joblib")
 _DEFAULT_SGD_CLF = os.path.join(_MODELS_DIR, "embedding_sgd_logreg.joblib")
 _DEFAULT_LOGREG_CLF = os.path.join(_MODELS_DIR, "embedding_logreg.joblib")
-
-DEFAULT_EMBEDDING_CLF_PATH = os.getenv(
-    "EMBEDDING_CLF_PATH",
-    (_DEFAULT_SGD_CLF if os.path.exists(_DEFAULT_SGD_CLF) else _DEFAULT_LOGREG_CLF),
+_DEFAULT_CLF = next(
+    (path for path in (_DEFAULT_SGD_CLF_V2, _DEFAULT_SGD_CLF, _DEFAULT_LOGREG_CLF) if os.path.exists(path)),
+    _DEFAULT_LOGREG_CLF,
 )
+
+DEFAULT_EMBEDDING_CLF_PATH = os.getenv("EMBEDDING_CLF_PATH") or _DEFAULT_CLF
 
 class SigmoidCalibratedBinaryClassifier:
     """Simple Platt scaling (sigmoid calibration) wrapper.
@@ -68,7 +70,7 @@ _SigmoidCalibratedBinaryClassifier = SigmoidCalibratedBinaryClassifier
 
 
 AI_THRESHOLD = float(os.getenv("AI_THRESHOLD", "0.90"))
-LIKELY_AI_THRESHOLD = float(os.getenv("LIKELY_AI_THRESHOLD", "0.50"))
+LIKELY_AI_THRESHOLD = float(os.getenv("LIKELY_AI_THRESHOLD", "0.80"))
 LIKELY_REAL_THRESHOLD = float(os.getenv("LIKELY_REAL_THRESHOLD", "0.10"))
 REAL_THRESHOLD = float(os.getenv("REAL_THRESHOLD", "0.05"))
 UNCERTAIN_EPS = float(os.getenv("UNCERTAIN_EPS", "0.01"))
@@ -76,12 +78,12 @@ UNCERTAIN_EPS = float(os.getenv("UNCERTAIN_EPS", "0.01"))
 
 def _label_from_p_ai(p_ai: float):
     if p_ai >= AI_THRESHOLD:
-        return "AI", "ai"
+        return "Likely AI", "ai"
 
     if abs(p_ai - 0.5) <= UNCERTAIN_EPS:
         return "Uncertain", "uncertain"
 
-    if p_ai > LIKELY_AI_THRESHOLD:
+    if p_ai >= LIKELY_AI_THRESHOLD:
         return "Likely AI", "likely_ai"
 
     # Real thresholds should apply when the model believes p_ai is low.
