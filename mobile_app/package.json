@@ -7,14 +7,17 @@
     "expo-constants": "~17.1.7",
     "expo-dev-client": "~57.0.11",
     "expo-image-picker": "~16.1.4",
+    "expo-secure-store": "~14.1.0",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
-    "react-native": "0.86.2"
+    "react-native": "0.86.2",
+    "react-native-nitro-google-signin": "^1.0.0",
+    "react-native-nitro-modules": "^0.31.0"
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web"
   },
   "private": true

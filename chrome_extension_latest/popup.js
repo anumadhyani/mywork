@@ -361,7 +361,8 @@ document.addEventListener('DOMContentLoaded', function() {
         method: 'POST',
         headers: {
           // Use our first-party JWT instead of requiring end users to paste API keys.
-          'Authorization': `Bearer ${jwtToken}`
+          'Authorization': `Bearer ${jwtToken}`,
+          'X-Client-Channel': 'chrome_extension'
         },
         body: formData,
         signal: abortController.signal
@@ -406,7 +407,8 @@ document.addEventListener('DOMContentLoaded', function() {
               method: 'POST',
               headers: {
                 // Reuse JWT for all protected backend endpoints.
-                'Authorization': `Bearer ${jwtToken}`
+                'Authorization': `Bearer ${jwtToken}`,
+                'X-Client-Channel': 'chrome_extension'
               },
               body: formData,
               signal: abortController.signal

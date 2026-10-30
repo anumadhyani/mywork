@@ -66,7 +66,26 @@ def main() -> None:
         default="Rajarshi-Roy-research/Defactify_Image_Dataset",
         help="HuggingFace dataset name.",
     )
+    parser.add_argument(
+        "--forced-label",
+        type=int,
+        default=None,
+        choices=[0, 1],
+        help="Force every example to this label (0=Real, 1=AI) for label-free datasets.",
+    )
+    parser.add_argument(
+        "--label-map",
+        default="",
+        help="Comma-separated src=dst label remapping applied before eval, e.g. '0=1,1=0'.",
+    )
     args = parser.parse_args()
+
+    label_map = {}
+    for part in (args.label_map or "").split(","):
+        part = part.strip()
+        if part and "=" in part:
+            src, dst = part.split("=", 1)
+            label_map[int(src.strip())] = int(dst.strip())
 
     try:
         from datasets import load_dataset  # type: ignore
@@ -79,13 +98,15 @@ def main() -> None:
 
     cols = list(getattr(ds, "column_names", []) or [])
     image_col = _pick_col(cols, ["image", "Image", "img", "Img", "pixel_values"])
-    label_a_col = _pick_col(cols, ["Label_A", "label_a", "labelA"])
+    label_a_col = _pick_col(cols, ["Label_A", "label_a", "labelA", "label", "Label"])
     label_b_col = _pick_col(cols, ["Label_B", "label_b", "labelB"])
 
     if not image_col:
         raise SystemExit(f"Could not find image column. Available columns: {cols}")
-    if not label_a_col:
-        raise SystemExit(f"Could not find Label_A column. Available columns: {cols}")
+    if not label_a_col and args.forced_label is None:
+        raise SystemExit(
+            f"Could not find Label_A column (and no --forced-label given). Available columns: {cols}"
+        )
 
     y_true: list[int] = []
     y_pred: list[int] = []
@@ -104,12 +125,13 @@ def main() -> None:
 
     for n, ex in enumerate(_iter_examples(ds, seed=args.seed, limit=args.limit)):
         try:
-            label_a = ex.get(label_a_col)
+            label_a = args.forced_label if args.forced_label is not None else ex.get(label_a_col)
             try:
                 label_a = int(label_a)
             except Exception:
                 skipped += 1
                 continue
+            label_a = label_map.get(label_a, label_a)
             if label_a not in (0, 1):
                 skipped += 1
                 continue

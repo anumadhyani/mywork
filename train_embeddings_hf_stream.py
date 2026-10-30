@@ -28,6 +28,25 @@ class _Batch:
     y: np.ndarray
 
 
+_STREAM_MAX_RESTARTS = 5
+
+
+def _iter_with_reconnect(ds):
+    # Streaming shards can drop mid-iteration (network flakes). Restarting the
+    # stream resumes from the shard start; duplicates are acceptable for
+    # train/eval statistics.
+    restarts = 0
+    while True:
+        try:
+            yield from ds
+            return
+        except Exception as e:
+            restarts += 1
+            if restarts > _STREAM_MAX_RESTARTS:
+                raise
+            print(f"Stream dropped ({e}); restarting ({restarts}/{_STREAM_MAX_RESTARTS})...")
+
+
 def _iter_stream(dataset: str, split: str, seed: int):
     from datasets import load_dataset  # type: ignore
 
@@ -39,7 +58,7 @@ def _iter_stream(dataset: str, split: str, seed: int):
     except Exception:
         pass
 
-    for ex in ds:
+    for ex in _iter_with_reconnect(ds):
         yield ex
 
 
@@ -54,20 +73,27 @@ def _iter_stream_with_shuffle(dataset: str, split: str, seed: int, shuffle: bool
         except Exception:
             pass
 
-    for ex in ds:
+    for ex in _iter_with_reconnect(ds):
         yield ex
+
+
+_IMAGE_COLS = ("image", "Image", "img", "Img", "photo", "picture")
+_LABEL_COLS = ("Label_A", "label_a", "labelA", "label", "Label")
+
+
+def _get_image(example: dict):
+    for k in _IMAGE_COLS:
+        if k in example:
+            return example.get(k)
+    return None
 
 
 def _get_cols(example: dict) -> tuple[object | None, int | None]:
     # Accept both canonical and variant casing.
-    img = None
-    if "image" in example:
-        img = example.get("image")
-    elif "Image" in example:
-        img = example.get("Image")
+    img = _get_image(example)
 
     label = None
-    for k in ("Label_A", "label_a", "labelA"):
+    for k in _LABEL_COLS:
         if k in example:
             label = example.get(k)
             break
@@ -95,6 +121,18 @@ def _load_image_pil(img_obj):
     # HF Image feature returns a PIL-like object with .convert/.save.
     if hasattr(img_obj, "convert"):
         return img_obj.convert("RGB")
+    # Some datasets give {"bytes": ...} or a filesystem path.
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        if isinstance(img_obj, dict) and img_obj.get("bytes"):
+            return Image.open(BytesIO(img_obj["bytes"])).convert("RGB")
+        if isinstance(img_obj, str) and os.path.exists(img_obj):
+            return Image.open(img_obj).convert("RGB")
+    except Exception:
+        return None
     return None
 
 
@@ -162,6 +200,99 @@ def _iter_batches(dataset: str, split: str, seed: int, limit: int, batch_size: i
         X = _embed_batch(model, preprocess, device=device, pil_images=pil_batch)
         y = np.asarray(y_batch, dtype=np.int64)
         yield _Batch(X=X, y=y), skipped
+
+
+@dataclass
+class _ExtraSpec:
+    name: str
+    split: str
+    label: int
+    limit: int
+
+
+def _parse_extra_datasets(raw: str) -> list[_ExtraSpec]:
+    # Format: hf_dataset:split:label[:limit][,hf_dataset:split:label[:limit]...]
+    # label: 0=Real, 1=AI (forced for every example in that dataset)
+    specs: list[_ExtraSpec] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        bits = part.split(":")
+        if len(bits) == 3:
+            name, split, label = bits[0], bits[1], bits[2]
+            limit = 0
+        elif len(bits) == 4:
+            name, split, label, limit = bits[0], bits[1], bits[2], int(bits[3])
+        else:
+            raise ValueError(
+                f"Invalid --extra-datasets entry '{part}'. Expected name:split:label[:limit]"
+            )
+        specs.append(
+            _ExtraSpec(name=name.strip(), split=split.strip(), label=int(label), limit=int(limit))
+        )
+    return specs
+
+
+def _iter_extra_examples(spec: _ExtraSpec, seed: int, shuffle: bool, shuffle_buffer: int):
+    # Yields decoded (pil, label) pairs for an extra dataset with a forced label.
+    from datasets import load_dataset  # type: ignore
+
+    ds = load_dataset(spec.name, split=spec.split, streaming=True)
+    if shuffle and shuffle_buffer and shuffle_buffer > 0:
+        try:
+            ds = ds.shuffle(seed=seed, buffer_size=int(shuffle_buffer))
+        except Exception:
+            pass
+
+    seen = 0
+    for ex in _iter_with_reconnect(ds):
+        if spec.limit and seen >= spec.limit:
+            return
+        img = _get_image(ex)
+        pil = _load_image_pil(img) if img is not None else None
+        if pil is None:
+            continue
+        seen += 1
+        yield pil, int(spec.label)
+
+
+def _iter_mixed_train_examples(
+    primary_examples,
+    extra_specs: list[_ExtraSpec],
+    seed: int,
+    shuffle: bool,
+    shuffle_buffer: int,
+    extra_mix: float,
+):
+    # Yields (pil, label, is_extra). Interleaves extra-dataset examples into the
+    # primary stream so that roughly `extra_mix` of yielded items come from extras.
+    extra_iters = [
+        iter(_iter_extra_examples(s, seed=seed, shuffle=shuffle, shuffle_buffer=shuffle_buffer))
+        for s in extra_specs
+    ]
+    extra_yielded = 0
+    primary_yielded = 0
+    mix = float(extra_mix)
+
+    for ex in primary_examples:
+        # Yield an extra example whenever we're below the target ratio.
+        while extra_iters and mix > 0 and extra_yielded <= mix * (primary_yielded + extra_yielded):
+            pulled = None
+            while extra_iters and pulled is None:
+                it = extra_iters[0]
+                try:
+                    pulled = next(it)
+                except StopIteration:
+                    extra_iters.pop(0)
+            if pulled is None:
+                break
+            extra_yielded += 1
+            yield pulled[0], pulled[1], True
+
+        img_obj, label_a = _get_cols(ex)
+        primary_yielded += 1
+        yield img_obj, label_a, False
 
 
 def _export_onnx(model, out_path: str):
@@ -249,10 +380,10 @@ def _report_precision_coverage(y_true: np.ndarray, p_ai: np.ndarray, target_prec
     print("Real precision:", f"{prec_real_final:.4f}", "n=", n_real)
     print("Coverage (non-uncertain):", f"{coverage:.4f}")
     print("Uncertain n=", int(pred_unc.sum()))
-#pedfismiaatCthirbility issues.
-#j_(ss_iar(:py:fbtznugats.ttan[ m6paabn _ao >f _bmra=yya
-        proba = self.predict_proba(X)
-        return (proba[:, 1] >= 0.5).astype(np.int64)
+
+
+# _SigmoidCalibratedBinaryClassifier is imported from model.py so that
+# joblib artifacts serialize against an importable module (not __main__).
 
 
 def main() -> None:
@@ -329,6 +460,21 @@ def main() -> None:
         default=20000,
         help="Max number of real embeddings to keep in memory for oversampling.",
     )
+    parser.add_argument(
+        "--extra-datasets",
+        default="",
+        help=(
+            "Comma-separated extra HF datasets to mix into training: "
+            "name:split:label[:limit][,...]. label: 0=Real, 1=AI (forced). "
+            "Use to add diverse real images (e.g. flickr30k:train:0:20000)."
+        ),
+    )
+    parser.add_argument(
+        "--extra-mix",
+        type=float,
+        default=0.25,
+        help="Target fraction of extra-dataset examples in the training stream (0 disables extras).",
+    )
 
     parser.add_argument(
         "--clf-out",
@@ -348,6 +494,17 @@ def main() -> None:
     )
     parser.add_argument("--onnx-out", default="models/mobilenetv3_embedding.onnx")
     args = parser.parse_args()
+
+    extra_specs = _parse_extra_datasets(args.extra_datasets)
+    if float(args.extra_mix) <= 0:
+        extra_specs = []
+    if extra_specs:
+        print(
+            "Extra datasets:",
+            [(s.name, s.split, s.label, s.limit) for s in extra_specs],
+            "mix=",
+            float(args.extra_mix),
+        )
 
     # --- Online classifier (logistic regression via SGD) ---
     # We use partial_fit so we never need to store all embeddings in memory.
@@ -371,6 +528,7 @@ def main() -> None:
     # --- Train loop (optionally reserve a calibration buffer) ---
     print("Streaming train split:", args.train_split)
     seen_train = 0
+    extra_seen = 0
     skipped_train = 0
     seen_fit = 0
     cal_X: list[np.ndarray] = []
@@ -401,17 +559,27 @@ def main() -> None:
 
         last_heartbeat = seen_train
 
-        for ex in _iter_stream_with_shuffle(
+        primary_stream = _iter_stream_with_shuffle(
             args.dataset,
             split=args.train_split,
             seed=args.seed + epoch,
             shuffle=(args.shuffle == "on"),
             shuffle_buffer=int(args.shuffle_buffer),
-        ):
+        )
+        mixed_stream = _iter_mixed_train_examples(
+            primary_stream,
+            extra_specs,
+            seed=args.seed + epoch,
+            shuffle=(args.shuffle == "on"),
+            shuffle_buffer=int(args.shuffle_buffer),
+            extra_mix=float(args.extra_mix),
+        )
+
+        for img_obj, label_a, is_extra in mixed_stream:
             if args.limit_train and seen_train >= args.limit_train:
                 break
 
-            img_obj, label_a = _get_cols(ex)
+            # label_a is None for unrecognized primary examples; extras are always 0/1.
             if label_a not in (0, 1):
                 skipped_train += 1
                 continue
@@ -424,6 +592,8 @@ def main() -> None:
             pil_batch.append(pil)
             y_batch.append(int(label_a))
             seen_train += 1
+            if is_extra:
+                extra_seen += 1
 
             if args.heartbeat and args.heartbeat > 0 and (seen_train - last_heartbeat) >= int(args.heartbeat):
                 print(f"Streamed {seen_train} train examples...")
@@ -505,8 +675,19 @@ def main() -> None:
                     clf.partial_fit(X, y, classes=classes, sample_weight=sw)
                 seen_fit += int(y.size)
 
+    # If the calibration reserve consumed all batches (small train set), fit on it.
+    if seen_fit == 0 and cal_X:
+        X_all = np.vstack(cal_X)
+        y_all = np.concatenate(cal_y)
+        sw = batch_sample_weight(y_all)
+        if sw is None:
+            clf.partial_fit(X_all, y_all, classes=classes)
+        else:
+            clf.partial_fit(X_all, y_all, classes=classes, sample_weight=sw)
+        seen_fit += int(y_all.size)
+
     print("Train done")
-    print("Train streamed examples:", seen_train, "skipped:", skipped_train)
+    print("Train streamed examples:", seen_train, "skipped:", skipped_train, "extra:", extra_seen)
     print("Train fit examples:", seen_fit)
 
     # --- Optional probability calibration ---
@@ -531,6 +712,11 @@ def main() -> None:
         calibrator.fit(scores, y_cal)
         final_clf = _SigmoidCalibratedBinaryClassifier(base_estimator=clf, calibrator=calibrator)
         print("Calibrated probabilities with: sigmoid (platt scaling)", "n_cal=", cal_n)
+
+    # --- Save classifier BEFORE eval: a crash during test streaming won't lose training ---
+    os.makedirs(os.path.dirname(args.clf_out) or ".", exist_ok=True)
+    joblib.dump(final_clf, args.clf_out)
+    print("Saved classifier to:", args.clf_out)
 
     # --- Evaluate loop ---
     print("Streaming test split:", args.test_split)
@@ -597,10 +783,7 @@ def main() -> None:
     if p_ai.size == yt.size:
         _report_precision_coverage(yt, p_ai, target_precision=float(args.target_precision))
 
-    # --- Save classifier + meta (no images stored) ---
-    os.makedirs(os.path.dirname(args.clf_out) or ".", exist_ok=True)
-    joblib.dump(final_clf, args.clf_out)
-
+    # --- Save meta ---
     meta = {
         "dataset": args.dataset,
         "train_split": args.train_split,
@@ -614,6 +797,9 @@ def main() -> None:
         "class_weight": args.class_weight,
         "batch_size": int(args.batch_size),
         "device": device,
+        "extra_datasets": [f"{s.name}:{s.split}:{s.label}:{s.limit}" for s in extra_specs],
+        "extra_mix": float(args.extra_mix),
+        "extra_seen": int(extra_seen),
         "classifier_path": args.clf_out,
         "onnx": args.onnx_out,
     }

@@ -30,6 +30,7 @@ CORS(app)
 
 _ANALYTICS_DB_PATH = os.getenv("ANALYTICS_DB_PATH", os.path.join(os.getcwd(), "analytics.sqlite3"))
 _GEO_CACHE_TTL_SECONDS = int(os.getenv("GEO_CACHE_TTL_SECONDS", "86400"))
+_GEO_FAILURE_CACHE_TTL_SECONDS = int(os.getenv("GEO_FAILURE_CACHE_TTL_SECONDS", "300"))
 _geo_cache = {}
 _DATABASE_URL = os.getenv("DATABASE_URL")
 _ANALYTICS_RETENTION_DAYS = int(os.getenv("ANALYTICS_RETENTION_DAYS", "30"))
@@ -298,6 +299,7 @@ def _handle_c2pa_request():
         try:
             import c2pa  # type: ignore
         except Exception as e:
+            _record_analysis_result("c2pa", tmp_path, error=e, file_mime=f.mimetype)
             return jsonify({"error": f"c2pa-python is not available: {str(e)}", "status": "failure"}), 500
 
         settings = None
@@ -309,8 +311,16 @@ def _handle_c2pa_request():
             with c2pa.Reader(tmp_path, context=context) as reader:
                 detailed = reader.detailed_json()
 
+        c2pa_label = _c2pa_result_label(detailed)
+        _record_analysis_result(
+            "c2pa",
+            tmp_path,
+            result={"label": c2pa_label, "band": c2pa_label},
+            file_mime=f.mimetype,
+        )
         return jsonify({"status": "success", "c2pa": detailed})
     except Exception as e:
+        _record_analysis_result("c2pa", tmp_path, error=e, file_mime=f.mimetype)
         return jsonify({"error": f"C2PA read failed: {str(e)}", "status": "failure"}), 500
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -487,6 +497,7 @@ def _maybe_cleanup_analytics():
             try:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM api_requests WHERE ts_utc < %s", (cutoff,))
+                cur.execute("DELETE FROM analysis_results WHERE ts_utc < %s", (cutoff,))
                 conn.commit()
             finally:
                 conn.close()
@@ -494,6 +505,7 @@ def _maybe_cleanup_analytics():
             conn = _sqlite_conn()
             try:
                 conn.execute("DELETE FROM api_requests WHERE ts_utc < ?", (cutoff.isoformat(),))
+                conn.execute("DELETE FROM analysis_results WHERE ts_utc < ?", (cutoff.isoformat(),))
                 conn.commit()
             finally:
                 conn.close()
@@ -527,6 +539,40 @@ def _ensure_analytics_schema():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_ip ON api_requests(ip)")
             cur.execute("ALTER TABLE api_requests ADD COLUMN IF NOT EXISTS api_key_id BIGINT")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_api_key_id ON api_requests(api_key_id)")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS analysis_results (
+                  id BIGSERIAL PRIMARY KEY,
+                  ts_utc TIMESTAMPTZ NOT NULL,
+                  analysis_type TEXT NOT NULL,
+                  endpoint TEXT NOT NULL,
+                  channel TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  result_label TEXT,
+                  result_band TEXT,
+                  confidence_real DOUBLE PRECISION,
+                  confidence_ai DOUBLE PRECISION,
+                  p_ai DOUBLE PRECISION,
+                  backend TEXT,
+                  pred INTEGER,
+                  uncertain BOOLEAN,
+                  image_sha256 TEXT,
+                  image_bytes BIGINT,
+                  file_mime TEXT,
+                  ip TEXT,
+                  country TEXT,
+                  region TEXT,
+                  city TEXT,
+                  api_key_id BIGINT,
+                  error TEXT
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_ts ON analysis_results(ts_utc)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_type_band ON analysis_results(analysis_type, result_band)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_channel ON analysis_results(channel)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_geo ON analysis_results(country, region)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_image_hash ON analysis_results(image_sha256)")
             conn.commit()
         finally:
             conn.close()
@@ -553,9 +599,174 @@ def _ensure_analytics_schema():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_ts ON api_requests(ts_utc)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_ip ON api_requests(ip)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_api_requests_api_key_id ON api_requests(api_key_id)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analysis_results (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts_utc TEXT NOT NULL,
+              analysis_type TEXT NOT NULL,
+              endpoint TEXT NOT NULL,
+              channel TEXT NOT NULL,
+              status TEXT NOT NULL,
+              result_label TEXT,
+              result_band TEXT,
+              confidence_real REAL,
+              confidence_ai REAL,
+              p_ai REAL,
+              backend TEXT,
+              pred INTEGER,
+              uncertain INTEGER,
+              image_sha256 TEXT,
+              image_bytes INTEGER,
+              file_mime TEXT,
+              ip TEXT,
+              country TEXT,
+              region TEXT,
+              city TEXT,
+              api_key_id INTEGER,
+              error TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_ts ON analysis_results(ts_utc)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_type_band ON analysis_results(analysis_type, result_band)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_channel ON analysis_results(channel)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_geo ON analysis_results(country, region)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_image_hash ON analysis_results(image_sha256)")
         conn.commit()
     finally:
         conn.close()
+
+
+def _client_channel():
+    channel = (request.headers.get("X-Client-Channel") or "").strip().lower()
+    channel = "".join(ch for ch in channel if ch.isalnum() or ch in ("-", "_"))
+    if channel:
+        return channel[:64]
+
+    origin = (request.headers.get("Origin") or "").lower()
+    if origin.startswith("chrome-extension://"):
+        return "chrome_extension"
+
+    user_agent = (request.headers.get("User-Agent") or "").lower()
+    if "expo" in user_agent or "okhttp" in user_agent:
+        return "mobile_app"
+
+    return "api"
+
+
+def _file_sha256(path: str) -> str | None:
+    if not path:
+        return None
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _float_or_none(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _int_or_none(value):
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _c2pa_result_label(detailed):
+    if not isinstance(detailed, dict):
+        return "no_credentials"
+    manifest_store = detailed.get("manifest_store") or detailed.get("manifestStore") or {}
+    manifests = detailed.get("manifests") or detailed.get("manifest_list") or []
+    if manifest_store or manifests:
+        return "credentials_found"
+    return "no_credentials"
+
+
+def _record_analysis_result(analysis_type: str, image_path: str | None, result=None, error=None, file_mime=None):
+    try:
+        _ensure_analytics_schema()
+
+        proba = result.get("proba") if isinstance(result, dict) else None
+        confidence_real = confidence_ai = p_ai = None
+        if isinstance(proba, (list, tuple)) and len(proba) >= 2:
+            confidence_real = _float_or_none(proba[0])
+            confidence_ai = _float_or_none(proba[1])
+            p_ai = confidence_ai
+
+        image_sha256 = None
+        image_bytes = None
+        if image_path and os.path.exists(image_path):
+            image_sha256 = _file_sha256(image_path)
+            image_bytes = os.path.getsize(image_path)
+
+        ip = _get_client_ip()
+        geo = _geo_lookup(ip)
+        values = {
+            "ts_utc": datetime.now(timezone.utc),
+            "analysis_type": analysis_type,
+            "endpoint": request.path or "",
+            "channel": _client_channel(),
+            "status": "failure" if error else "success",
+            "result_label": (
+                (result.get("label") or result.get("prediction")) if isinstance(result, dict) else None
+            ),
+            "result_band": result.get("band") if isinstance(result, dict) else None,
+            "confidence_real": confidence_real,
+            "confidence_ai": confidence_ai,
+            "p_ai": _float_or_none(result.get("p_ai", p_ai)) if isinstance(result, dict) else p_ai,
+            "backend": result.get("backend") if isinstance(result, dict) else None,
+            "pred": _int_or_none(result.get("pred")) if isinstance(result, dict) else None,
+            "uncertain": bool(result.get("uncertain")) if isinstance(result, dict) else None,
+            "image_sha256": image_sha256,
+            "image_bytes": image_bytes,
+            "file_mime": file_mime,
+            "ip": ip,
+            "country": geo.get("country"),
+            "region": geo.get("region"),
+            "city": geo.get("city"),
+            "api_key_id": int(getattr(g, "api_key_id", 0) or 0) or None,
+            "error": str(error)[:1000] if error else None,
+        }
+
+        columns = list(values.keys())
+        if _DATABASE_URL:
+            conn = _pg_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    f"INSERT INTO analysis_results ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))})",
+                    tuple(values[c] for c in columns),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            conn = _sqlite_conn()
+            try:
+                sqlite_values = values.copy()
+                sqlite_values["ts_utc"] = sqlite_values["ts_utc"].isoformat()
+                if sqlite_values["uncertain"] is not None:
+                    sqlite_values["uncertain"] = int(sqlite_values["uncertain"])
+                conn.execute(
+                    f"INSERT INTO analysis_results ({', '.join(columns)}) VALUES ({', '.join(['?'] * len(columns))})",
+                    tuple(sqlite_values[c] for c in columns),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception as e:
+        app.logger.warning("analysis_result_store_failed error=%s", type(e).__name__)
 
 
 def _get_client_ip():
@@ -573,30 +784,50 @@ def _get_client_ip():
 
 
 def _geo_lookup(ip):
+    empty_geo = {"country": None, "region": None, "city": None}
     if not ip:
-        return {"country": None, "region": None, "city": None}
+        return empty_geo
+
+    try:
+        if not ipaddress.ip_address(ip).is_global:
+            return empty_geo
+    except ValueError:
+        return empty_geo
 
     now = time.time()
     cached = _geo_cache.get(ip)
-    if cached and (now - cached["ts"] < _GEO_CACHE_TTL_SECONDS):
-        return cached["geo"]
+    if cached:
+        ttl = _GEO_CACHE_TTL_SECONDS if cached.get("ok") else _GEO_FAILURE_CACHE_TTL_SECONDS
+        if now - cached["ts"] < ttl:
+            return cached["geo"]
 
-    geo = {"country": None, "region": None, "city": None}
+    geo = empty_geo.copy()
+    ok = False
     try:
         import requests
 
         r = requests.get(f"https://ipapi.co/{ip}/json/", timeout=1.5)
-        if r.ok:
-            j = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-            geo = {
-                "country": j.get("country_name") or j.get("country"),
-                "region": j.get("region") or j.get("region_code"),
-                "city": j.get("city"),
-            }
-    except Exception:
-        pass
+        if not r.ok:
+            app.logger.info("geo_lookup_failed status=%s", r.status_code)
+        elif not r.headers.get("content-type", "").startswith("application/json"):
+            app.logger.info("geo_lookup_failed reason=non_json_response")
+        else:
+            j = r.json()
+            if j.get("error"):
+                app.logger.info("geo_lookup_failed reason=%s", j.get("reason") or "provider_error")
+            else:
+                geo = {
+                    "country": j.get("country_name") or j.get("country") or j.get("country_code"),
+                    "region": j.get("region") or j.get("region_code"),
+                    "city": j.get("city"),
+                }
+                ok = any(geo.values())
+                if not ok:
+                    app.logger.info("geo_lookup_failed reason=empty_response")
+    except Exception as e:
+        app.logger.info("geo_lookup_failed error=%s", type(e).__name__)
 
-    _geo_cache[ip] = {"ts": now, "geo": geo}
+    _geo_cache[ip] = {"ts": now, "geo": geo, "ok": ok}
     return geo
 
 
@@ -613,7 +844,8 @@ def _analytics_after_request(response):
         return response
 
     ip = _get_client_ip()
-    geo = _geo_lookup(ip)
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    geo = _geo_lookup(ip) if status_code < 400 else {"country": None, "region": None, "city": None}
     ts_dt = datetime.now(timezone.utc)
 
     try:
@@ -1158,6 +1390,7 @@ def privacy_policy():
     <ul>
       <li>IP address</li>
       <li>Request metadata (timestamp, endpoint path, HTTP method, status code)</li>
+      <li>Analysis metadata (analysis type, result band, client channel, file type/size, image hash)</li>
       <li>Approximate location derived from IP (country/region/city), when available</li>
     </ul>
 
@@ -1211,7 +1444,11 @@ def predict():
             f.save(tmp_path)
 
         result = predict_image(tmp_path, model_path=model_path)
+        _record_analysis_result("ai_detect", tmp_path, result=result, file_mime=f.mimetype)
         return jsonify(result)
+    except Exception as e:
+        _record_analysis_result("ai_detect", tmp_path, error=e, file_mime=f.mimetype)
+        raise
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -1254,6 +1491,7 @@ def api_ai_detect():
             f.save(tmp_path)
 
         result = predict_image(tmp_path, model_path=model_path)
+        _record_analysis_result("ai_detect", tmp_path, result=result, file_mime=f.mimetype)
 
         # --- Diagnostics (helps debug thresholding + model bias in production) ---
         # Keep these fields lightweight and numeric; clients can ignore them.
@@ -1289,6 +1527,7 @@ def api_ai_detect():
             }
         )
     except Exception as e:
+        _record_analysis_result("ai_detect", tmp_path, error=e, file_mime=f.mimetype)
         return jsonify({"error": f"AI Detection failed: {str(e)}", "status": "failure"}), 500
     finally:
         if tmp_path and os.path.exists(tmp_path):

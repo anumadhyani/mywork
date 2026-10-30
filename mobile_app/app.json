@@ -3,7 +3,14 @@
     "name": "mobile_app",
     "slug": "mobile_app",
     "version": "1.0.0",
+    "scheme": "com.anumadhyani.mywork",
     "orientation": "portrait",
+    "plugins": [
+      [
+        "react-native-nitro-google-signin",
+        { "iosUrlScheme": "com.googleusercontent.apps.536678576997-6rht54rtmd7uuh956jh495783dica4mv" }
+      ]
+    ],
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
@@ -24,6 +31,7 @@
     },
     "extra": {
       "apiBaseUrl": "https://mywork-production.up.railway.app",
+      "googleWebClientId": "536678576997-0a9sh9q0vskqkrm57nakqsqt53nic0rr.apps.googleusercontent.com",
       "eas": {
         "projectId": "c8f07aff-5701-47b2-a0a1-1b15c67fe47c"
       }
