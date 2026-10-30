@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "dependencies": {
-    "expo": "~57.0.9",
-    "expo-constants": "~17.1.7",
-    "expo-dev-client": "~57.0.11",
-    "expo-image-picker": "~16.1.4",
-    "expo-secure-store": "~14.1.0",
+    "expo": "~57.0.31",
+    "expo-constants": "~57.0.22",
+    "expo-dev-client": "~57.0.20",
+    "expo-image-picker": "~57.0.20",
+    "expo-secure-store": "~57.0.4",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
-    "react-native": "0.86.2",
+    "react-native": "0.86.3",
     "react-native-nitro-google-signin": "^1.0.0",
     "react-native-nitro-modules": "^0.31.0"
   },
@@ -20,5 +20,9 @@
     "ios": "expo run:ios",
     "web": "expo start --web"
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "deepmerge": "4.1.1",
+    "zod": "4.6.7"
+  }
 }

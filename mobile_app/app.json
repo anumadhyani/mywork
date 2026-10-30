@@ -8,8 +8,11 @@
     "plugins": [
       [
         "react-native-nitro-google-signin",
-        { "iosUrlScheme": "com.googleusercontent.apps.536678576997-6rht54rtmd7uuh956jh495783dica4mv" }
-      ]
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.536678576997-6rht54rtmd7uuh956jh495783dica4mv"
+        }
+      ],
+      "expo-secure-store"
     ],
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
