@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import urllib.parse
 import urllib.request
 
-from flask import Flask, jsonify, request, g
+from flask import Flask, jsonify, request, g, send_from_directory
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -41,8 +41,17 @@ _API_KEY_HEADER = "X-API-Key"
 _API_KEY_HMAC_ENV_PREFIX = "API_KEY_HMAC_SECRET_V"
 _ADMIN_IP_ALLOWLIST = os.getenv("ADMIN_IP_ALLOWLIST", "")
 
+_WEB_APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web_app")
+_WEB_GOOGLE_CLIENT_ID = os.getenv(
+    "GOOGLE_WEB_CLIENT_ID",
+    "536678576997-0a9sh9q0vskqkrm57nakqsqt53nic0rr.apps.googleusercontent.com",
+)
+
 _API_IP_SAFETY_LIMIT = os.getenv("API_IP_SAFETY_LIMIT", "60 per minute")
 _PUBLIC_C2PA_IP_LIMIT = os.getenv("PUBLIC_C2PA_IP_LIMIT", "15 per minute")
+_JWT_DAILY_LIMIT = int(os.getenv("JWT_DAILY_LIMIT", "500"))
+_JWT_HOURLY_LIMIT = int(os.getenv("JWT_HOURLY_LIMIT", "120"))
+_JWT_BURST_PER_SECOND = int(os.getenv("JWT_BURST_PER_SECOND", "3"))
 
 # --- First-party JWT auth (issued after Google sign-in) ---
 _JWT_SECRET = os.getenv("JWT_SECRET", "")
@@ -445,13 +454,31 @@ def _require_api_key():
 
 
 def _plan_limit_string():
-    plan = getattr(g, "api_plan", None) or {}
-    daily = int(plan.get("daily_limit", 0) or 0)
-    hourly = int(plan.get("hourly_limit", 0) or 0)
-    burst = int(plan.get("burst_per_second", 0) or 0)
-    if daily <= 0 or hourly <= 0 or burst <= 0:
-        return "1 per day"
-    return f"{daily} per day; {hourly} per hour; {burst} per second"
+    if getattr(g, "api_key_id", None):
+        plan = getattr(g, "api_plan", None) or {}
+        daily = int(plan.get("daily_limit", 0) or 0)
+        hourly = int(plan.get("hourly_limit", 0) or 0)
+        burst = int(plan.get("burst_per_second", 0) or 0)
+        if daily <= 0 or hourly <= 0 or burst <= 0:
+            return "1 per day"
+        return f"{daily} per day; {hourly} per hour; {burst} per second"
+
+    if getattr(g, "user_sub", None):
+        return f"{_JWT_DAILY_LIMIT} per day; {_JWT_HOURLY_LIMIT} per hour; {_JWT_BURST_PER_SECOND} per second"
+
+    return "1 per day"
+
+
+def _plan_limit_key():
+    api_key_id = getattr(g, "api_key_id", None)
+    if api_key_id:
+        return f"api_key:{api_key_id}"
+
+    user_sub = getattr(g, "user_sub", None)
+    if user_sub:
+        return f"user:{user_sub}"
+
+    return "anonymous"
 
 
 def _admin_audit(action: str, details: dict | None = None):
@@ -1365,6 +1392,23 @@ def admin_rotate_api_key(api_key_id: int):
         conn.close()
 
 
+@app.get("/")
+@app.get("/app")
+@app.get("/app/")
+def web_app_index():
+    return send_from_directory(_WEB_APP_DIR, "index.html")
+
+
+@app.get("/app/<path:filename>")
+def web_app_asset(filename: str):
+    return send_from_directory(_WEB_APP_DIR, filename)
+
+
+@app.get("/web-config")
+def web_config():
+    return jsonify({"google_client_id": _WEB_GOOGLE_CLIENT_ID})
+
+
 @app.get("/privacy")
 def privacy_policy():
     html = """<!doctype html>
@@ -1424,7 +1468,7 @@ def health():
 
 @app.post("/predict")
 @limiter.limit(_API_IP_SAFETY_LIMIT, key_func=get_remote_address)
-@limiter.limit(_plan_limit_string, key_func=lambda: str(getattr(g, "api_key_id", "")))
+@limiter.limit(_plan_limit_string, key_func=_plan_limit_key)
 def predict():
     if "file" not in request.files:
         return jsonify({"error": "Missing multipart form field 'file'"}), 400
@@ -1459,7 +1503,7 @@ def predict():
 
 @app.post("/api/c2pa")
 @limiter.limit(_API_IP_SAFETY_LIMIT, key_func=get_remote_address)
-@limiter.limit(_plan_limit_string, key_func=lambda: str(getattr(g, "api_key_id", "")))
+@limiter.limit(_plan_limit_string, key_func=_plan_limit_key)
 def api_c2pa():
     return _handle_c2pa_request()
 
@@ -1472,7 +1516,7 @@ def public_c2pa():
 
 @app.post("/api/ai-detect")
 @limiter.limit(_API_IP_SAFETY_LIMIT, key_func=get_remote_address)
-@limiter.limit(_plan_limit_string, key_func=lambda: str(getattr(g, "api_key_id", "")))
+@limiter.limit(_plan_limit_string, key_func=_plan_limit_key)
 def api_ai_detect():
     if "file" not in request.files:
         return jsonify({"error": "No file part", "status": "failure"}), 400
