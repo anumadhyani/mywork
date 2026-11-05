@@ -1600,12 +1600,16 @@ def admin_rotate_api_key(api_key_id: int):
 @app.get("/app")
 @app.get("/app/")
 def web_app_index():
-    return send_from_directory(_WEB_APP_DIR, "index.html")
+    response = send_from_directory(_WEB_APP_DIR, "index.html", max_age=0)
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
 
 
 @app.get("/app/<path:filename>")
 def web_app_asset(filename: str):
-    return send_from_directory(_WEB_APP_DIR, filename)
+    response = send_from_directory(_WEB_APP_DIR, filename, max_age=0)
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
 
 
 @app.get("/web-config")

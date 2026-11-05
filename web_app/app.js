@@ -353,7 +353,7 @@ function provenanceText(item) {
     if (item.c2pa.credentials_found === false || item.c2pa.result_band === "no_credentials") {
       return "No provenance credentials found";
     }
-    return source ? `Source: ${source}` : "Provenance credentials found";
+    return source ? `Source: ${source}` : "Provenance credentials found (source unknown)";
   }
   return "Provenance pending";
 }
