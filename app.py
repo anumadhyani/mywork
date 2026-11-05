@@ -317,13 +317,20 @@ def _handle_c2pa_request():
             with c2pa.Context(settings) as context:
                 with c2pa.Reader(tmp_path, context=context) as reader:
                     detailed_raw = reader.detailed_json()
+                    try:
+                        active_manifest = reader.get_active_manifest()
+                    except Exception:
+                        active_manifest = None
             detailed = _parse_c2pa_detailed(detailed_raw)
+            if isinstance(active_manifest, dict) and active_manifest:
+                detailed["active_manifest"] = active_manifest
         except c2pa.C2paError.ManifestNotFound:
             detailed = {"manifest_store": {}, "active_manifest": None, "credentials_found": False}
 
         c2pa_label = _c2pa_result_label(detailed)
         c2pa_origin = _c2pa_origin(detailed)
         provenance_source = _friendly_c2pa_source(c2pa_origin)
+        ai_provenance = provenance_source in _AI_PROVENANCE_SOURCES
         _record_analysis_result(
             "c2pa",
             tmp_path,
@@ -332,6 +339,7 @@ def _handle_c2pa_request():
                 "band": c2pa_label,
                 "origin": c2pa_origin,
                 "provenance_source": provenance_source,
+                "pred": 1 if ai_provenance else None,
             },
             file_mime=f.mimetype,
         )
@@ -342,6 +350,7 @@ def _handle_c2pa_request():
                 "result_band": c2pa_label,
                 "origin": c2pa_origin,
                 "source": provenance_source,
+                "ai_provenance": ai_provenance,
                 "c2pa": detailed,
             }
         )
@@ -840,6 +849,24 @@ def _c2pa_origin(detailed):
             return claim
 
     return _claim_generator_from(detailed)
+
+
+_AI_PROVENANCE_SOURCES = {
+    "OpenAI",
+    "Google",
+    "Google Gemini",
+    "Google Imagen",
+    "Google Veo",
+    "Midjourney",
+    "Adobe Firefly",
+    "Stability AI",
+    "Microsoft Designer",
+    "Ideogram",
+    "Leonardo AI",
+    "Runway",
+    "Black Forest Labs",
+    "ByteDance",
+}
 
 
 def _friendly_c2pa_source(origin):

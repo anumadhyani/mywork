@@ -291,7 +291,13 @@ function categoryForResult(result) {
   return "neutral";
 }
 
+function effectiveCategory(item) {
+  if (item.c2pa?.ai_provenance) return "synthetic";
+  return categoryForResult(item.result);
+}
+
 function resultSentence(item) {
+  if (item.c2pa?.ai_provenance) return "AI-generated content confirmed by provenance.";
   const result = item.result;
   if (!result) return "Waiting for analysis";
   const category = categoryForResult(result);
@@ -300,6 +306,7 @@ function resultSentence(item) {
 }
 
 function resultLabel(item) {
+  if (item.c2pa?.ai_provenance) return "AI (provenance)";
   const category = categoryForResult(item.result);
   if (category === "synthetic") return "Likely AI";
   if (category === "dubious") return "Dubious";
@@ -454,7 +461,7 @@ function statusLabel(status) {
 }
 
 function renderCard(item) {
-  const category = categoryForResult(item.result);
+  const category = effectiveCategory(item);
   const pAi = aiProbability(item);
   const canRemove = !state.running && item.status !== "analyzing";
 
@@ -497,9 +504,9 @@ function renderSummary() {
   const queued = state.items.filter((item) => item.status === "queued");
   const analyzing = state.items.filter((item) => item.status === "analyzing");
   const errors = state.items.filter((item) => item.status === "error");
-  const synthetic = done.filter((item) => categoryForResult(item.result) === "synthetic").length;
-  const dubious = done.filter((item) => categoryForResult(item.result) === "dubious").length;
-  const clean = done.filter((item) => categoryForResult(item.result) === "clean").length;
+  const synthetic = done.filter((item) => effectiveCategory(item) === "synthetic").length;
+  const dubious = done.filter((item) => effectiveCategory(item) === "dubious").length;
+  const clean = done.filter((item) => effectiveCategory(item) === "clean").length;
 
   els.queueCount.textContent = String(queued.length + analyzing.length);
   els.completedCount.textContent = String(done.length + errors.length);

@@ -347,9 +347,11 @@ export default function App() {
           <Text style={styles.resultTitle}>Provenance (C2PA)</Text>
           <Text style={styles.resultSubtext}>
             {c2pa.status === 'success'
-              ? (c2pa.credentials_found
-                ? `Content credentials found${(c2pa.source || c2pa.origin) ? ` — ${c2pa.source || c2pa.origin}` : ''}`
-                : 'No content credentials found.')
+              ? (c2pa.ai_provenance
+                ? `AI-generated content confirmed by provenance${(c2pa.source || c2pa.origin) ? ` — ${c2pa.source || c2pa.origin}` : ''}`
+                : (c2pa.credentials_found
+                  ? `Content credentials found${(c2pa.source || c2pa.origin) ? ` — ${c2pa.source || c2pa.origin}` : ''}`
+                  : 'No content credentials found.'))
               : c2pa.error || 'No content credentials found.'}
           </Text>
         </View>
