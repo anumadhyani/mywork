@@ -494,7 +494,8 @@ function renderCard(item) {
             ${item.heatmap?.overlay_png_b64
               ? `<img class="heatmap-img" src="data:image/png;base64,${item.heatmap.overlay_png_b64}" alt="AI-signal heatmap" />
                  <div class="heatmap-note">${escapeHtml(item.heatmap.caveat || "Regions most influencing the AI score; not proof of edits.")}</div>`
-              : `<button class="secondary heatmap-btn" data-heatmap="${item.id}" type="button" ${item.heatmapLoading ? "disabled" : ""}>${item.heatmapLoading ? "Generating heatmap..." : "Show AI-signal heatmap"}</button>`}
+              : `<button class="secondary heatmap-btn" data-heatmap="${item.id}" type="button" ${item.heatmapLoading ? "disabled" : ""}>${item.heatmapLoading ? "Generating heatmap..." : "Show AI-signal heatmap"}</button>
+                 ${item.heatmap?.error ? `<div class="error-text">${escapeHtml(item.heatmap.error)}</div>` : ""}`}
           ` : ""}
         ` : ""}
 
