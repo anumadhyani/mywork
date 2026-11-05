@@ -101,6 +101,7 @@ def load_model(model_path: str = DEFAULT_MODEL_PATH):
     return joblib.load(model_path)
 
 
+@lru_cache(maxsize=1)
 def _load_embedding_stack():
     if not (os.path.exists(DEFAULT_EMBEDDING_ONNX_PATH) and os.path.exists(DEFAULT_EMBEDDING_CLF_PATH)):
         return None
@@ -155,6 +156,23 @@ def _predict_with_embeddings(image_path: str):
         "confidence": None,
         "backend": "embedding_logreg",
     }
+
+
+def predict_embedding_p_ai_pil(image):
+    """Return p_ai for a PIL image using the embedding backend, or None if unavailable."""
+    stack = _load_embedding_stack()
+    if stack is None:
+        return None
+    session, clf, Image = stack
+    if not hasattr(clf, "predict_proba"):
+        return None
+    im = image.convert("RGB").resize((224, 224))
+    arr = np.asarray(im).astype(np.float32) / 255.0
+    arr = (arr - 0.5) / 0.5
+    arr = np.transpose(arr, (2, 0, 1))
+    inp = np.expand_dims(arr, axis=0)
+    emb = np.asarray(session.run(None, {session.get_inputs()[0].name: inp})[0])
+    return float(clf.predict_proba(emb)[0][1])
 
 
 def predict_image(image_path: str, model_path: str = DEFAULT_MODEL_PATH):

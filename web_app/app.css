@@ -700,6 +700,23 @@ main {
   line-height: 1.45;
 }
 
+.heatmap-img {
+  border-radius: 10px;
+  display: block;
+  max-width: 100%;
+}
+
+.heatmap-btn {
+  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.heatmap-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .error-text {
   color: var(--red);
   font-size: 12px;

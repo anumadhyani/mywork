@@ -490,6 +490,12 @@ function renderCard(item) {
             <div class="metric"><span>Uncertainty</span><strong>${item.result?.uncertain ? "Yes" : "No"}</strong></div>
           </div>
           <div class="provenance">${escapeHtml(provenanceText(item))}</div>
+          ${category === "synthetic" ? `
+            ${item.heatmap?.overlay_png_b64
+              ? `<img class="heatmap-img" src="data:image/png;base64,${item.heatmap.overlay_png_b64}" alt="AI-signal heatmap" />
+                 <div class="heatmap-note">${escapeHtml(item.heatmap.caveat || "Regions most influencing the AI score; not proof of edits.")}</div>`
+              : `<button class="secondary heatmap-btn" data-heatmap="${item.id}" type="button" ${item.heatmapLoading ? "disabled" : ""}>${item.heatmapLoading ? "Generating heatmap..." : "Show AI-signal heatmap"}</button>`}
+          ` : ""}
         ` : ""}
 
         ${item.status === "queued" ? `<div class="result-badge neutral">Ready for analysis</div>` : ""}
@@ -537,6 +543,12 @@ function render() {
 
   els.resultsGrid.querySelectorAll("[data-remove]").forEach((button) => {
     button.addEventListener("click", () => removeItem(Number(button.dataset.remove)));
+  });
+  els.resultsGrid.querySelectorAll("[data-heatmap]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = state.items.find((i) => i.id === Number(button.dataset.heatmap));
+      if (item && !item.heatmapLoading) generateHeatmap(item);
+    });
   });
 }
 
@@ -601,6 +613,26 @@ async function analyzeItem(item, includeC2pa) {
     item.status = "error";
     item.error = error.message || "Analysis failed";
   } finally {
+    render();
+  }
+}
+
+async function generateHeatmap(item) {
+  item.heatmapLoading = true;
+  render();
+  try {
+    const form = new FormData();
+    form.append("file", item.file, item.name);
+    const data = await parseApiResponse(await fetch(`${API_BASE}/api/ai-heatmap`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+    }));
+    item.heatmap = data;
+  } catch (error) {
+    item.heatmap = { error: error.message || "Heatmap failed" };
+  } finally {
+    item.heatmapLoading = false;
     render();
   }
 }

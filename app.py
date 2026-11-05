@@ -1886,3 +1886,59 @@ def api_ai_detect():
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+@app.post("/api/ai-heatmap")
+@limiter.limit(_API_IP_SAFETY_LIMIT, key_func=get_remote_address)
+@limiter.limit(_plan_limit_string, key_func=_plan_limit_key)
+def api_ai_heatmap():
+    if "file" not in request.files:
+        return jsonify({"error": "No file part", "status": "failure"}), 400
+
+    f = request.files["file"]
+    if not f.filename:
+        return jsonify({"error": "No selected file", "status": "failure"}), 400
+
+    suffix = os.path.splitext(f.filename)[1] or ".jpg"
+    tmp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            f.save(tmp_path)
+
+        from heatmap import generate_ai_heatmap
+
+        data = generate_ai_heatmap(tmp_path)
+        if data is None:
+            _record_analysis_result("ai_heatmap", tmp_path, error="heatmap_backend_unavailable", file_mime=f.mimetype)
+            return jsonify({"status": "failure", "error": "Heatmap requires the embedding backend"}), 503
+
+        _record_analysis_result(
+            "ai_heatmap",
+            tmp_path,
+            result={
+                "label": "heatmap",
+                "band": "heatmap",
+                "p_ai": data.get("p_ai"),
+                "backend": "occlusion_sensitivity",
+            },
+            file_mime=f.mimetype,
+        )
+        return jsonify(
+            {
+                "status": "success",
+                "method": "occlusion_sensitivity",
+                "caveat": "Highlights regions that most influence the AI score; not proof of edited areas.",
+                **data,
+            }
+        )
+    except Exception as e:
+        _record_analysis_result("ai_heatmap", tmp_path, error=e, file_mime=f.mimetype)
+        return jsonify({"error": f"Heatmap failed: {str(e)}", "status": "failure"}), 500
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
