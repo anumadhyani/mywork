@@ -280,6 +280,7 @@ main {
 
 .drop-zone,
 .queue-box,
+.history-card,
 .results-header,
 .result-card,
 .empty-state {
@@ -347,6 +348,71 @@ main {
 
 .queue-box {
   padding: 18px;
+}
+
+.history-card {
+  padding: 18px;
+}
+
+.history-head {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.history-head h3 {
+  font-size: 15px;
+  margin: 0;
+}
+
+.history-head button {
+  font-size: 12px;
+  padding: 5px 7px;
+}
+
+.history-status {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history-item {
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 10px;
+}
+
+.history-result {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.history-meta,
+.history-date {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  margin-top: 3px;
+}
+
+.history-date {
+  flex-shrink: 0;
+  max-width: 110px;
+  text-align: right;
 }
 
 .queue-row {

@@ -418,7 +418,7 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             if (c2paResponse.ok) {
               const c2paData = await c2paResponse.json();
-              const origin = (c2paData && c2paData.status === 'success') ? (c2paData.origin || _c2paOrigin(c2paData.c2pa)) : null;
+              const origin = (c2paData && c2paData.status === 'success') ? (c2paData.source || c2paData.origin || _c2paOrigin(c2paData.c2pa)) : null;
               if (origin) {
                 resultText.textContent = _sentenceWithOrigin(baseSentence, origin);
               }

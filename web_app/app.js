@@ -12,6 +12,9 @@ const state = {
   name: "",
   apiKey: "",
   items: [],
+  history: [],
+  historyLoading: false,
+  historyError: "",
   running: false,
   nextId: 1,
 };
@@ -42,6 +45,9 @@ const els = {
   resultsSubtitle: $("resultsSubtitle"),
   emptyState: $("emptyState"),
   resultsGrid: $("resultsGrid"),
+  historyStatus: $("historyStatus"),
+  historyList: $("historyList"),
+  refreshHistoryButton: $("refreshHistoryButton"),
 };
 
 function escapeHtml(value) {
@@ -128,6 +134,7 @@ function setSession(jwt, payload) {
   sessionStorage.removeItem(API_KEY_SESSION_KEY);
   renderAuth();
   render();
+  loadHistory();
 }
 
 function setApiKeySession(key) {
@@ -140,6 +147,7 @@ function setApiKeySession(key) {
   localStorage.removeItem(EMAIL_STORAGE_KEY);
   renderAuth();
   render();
+  loadHistory();
 }
 
 function signOut() {
@@ -153,8 +161,12 @@ function signOut() {
   localStorage.removeItem(JWT_STORAGE_KEY);
   localStorage.removeItem(EMAIL_STORAGE_KEY);
   sessionStorage.removeItem(API_KEY_SESSION_KEY);
+  state.history = [];
+  state.historyLoading = false;
+  state.historyError = "";
   renderAuth();
   render();
+  renderHistory();
 }
 
 async function exchangeGoogleCredential(credential) {
@@ -330,13 +342,108 @@ function provenanceText(item) {
   if (!els.includeC2pa.checked && !item.c2pa) return "Provenance check skipped";
   if (item.c2pa?.error) return "Provenance check unavailable";
   if (item.c2pa?.status === "success") {
-    const origin = item.c2pa.origin || c2paOrigin(item.c2pa.c2pa);
+    const source = item.c2pa.source || item.c2pa.origin || c2paOrigin(item.c2pa.c2pa);
     if (item.c2pa.credentials_found === false || item.c2pa.result_band === "no_credentials") {
       return "No provenance credentials found";
     }
-    return origin ? `Source: ${origin}` : "Provenance credentials found";
+    return source ? `Source: ${source}` : "Provenance credentials found";
   }
   return "Provenance pending";
+}
+
+function formatHistoryTime(ts) {
+  if (!ts) return "—";
+  const date = new Date(ts);
+  return Number.isNaN(date.getTime()) ? String(ts) : date.toLocaleString();
+}
+
+function historyResultText(row) {
+  if (row.analysis_type === "c2pa") {
+    return row.provenance_source
+      ? `Source: ${row.provenance_source}`
+      : (row.result_label || row.result_band || "Provenance check");
+  }
+  const result = row.result_label || row.result_band || "AI analysis";
+  return row.provenance_source ? `${result} · Source: ${row.provenance_source}` : result;
+}
+
+function mergeHistoryRows(rows) {
+  const merged = new Map();
+  rows.forEach((row) => {
+    const timestamp = new Date(row.ts_utc || 0).getTime();
+    const bucket = Number.isNaN(timestamp) ? row.id : Math.floor(timestamp / 60000);
+    const key = `${row.image_sha256 || `row-${row.id}`}-${bucket}`;
+    const item = merged.get(key) || { ...row };
+    if (row.analysis_type === "ai_detect") {
+      Object.assign(item, row);
+    } else if (row.analysis_type === "c2pa") {
+      item.provenance_source = row.provenance_source || item.provenance_source;
+      item.c2pa_band = row.result_band;
+    }
+    merged.set(key, item);
+  });
+  return [...merged.values()].sort((a, b) => new Date(b.ts_utc || 0) - new Date(a.ts_utc || 0));
+}
+
+function renderHistory() {
+  if (!signedIn()) {
+    els.historyStatus.textContent = "Sign in to load your analysis history.";
+    els.historyList.innerHTML = "";
+    return;
+  }
+  if (state.historyLoading) {
+    els.historyStatus.textContent = "Loading analysis history...";
+    return;
+  }
+  if (state.historyError) {
+    els.historyStatus.textContent = state.historyError;
+    return;
+  }
+  if (!state.history.length) {
+    els.historyStatus.textContent = "No analyses yet.";
+    els.historyList.innerHTML = "";
+    return;
+  }
+
+  els.historyStatus.textContent = `Latest ${state.history.length} analysis${state.history.length === 1 ? "" : "es"}.`;
+  els.historyList.innerHTML = state.history.map((row) => `
+    <div class="history-item">
+      <div>
+        <div class="history-result">${escapeHtml(historyResultText(row))}</div>
+        <div class="history-meta">${escapeHtml(row.analysis_type || "analysis")} · ${escapeHtml(row.channel || "api")}</div>
+      </div>
+      <div class="history-date">${escapeHtml(formatHistoryTime(row.ts_utc))}</div>
+    </div>
+  `).join("");
+}
+
+async function loadHistory() {
+  if (!signedIn()) {
+    state.history = [];
+    state.historyError = "";
+    renderHistory();
+    return;
+  }
+
+  state.historyLoading = true;
+  state.historyError = "";
+  renderHistory();
+  try {
+    const resp = await fetch(`${API_BASE}/api/my-analyses?limit=10`, {
+      headers: authHeaders(),
+    });
+    const data = await resp.json().catch(() => null);
+    if (!resp.ok || data?.status !== "success") {
+      throw new Error(data?.error || `Could not load history (${resp.status})`);
+    }
+    state.history = mergeHistoryRows(data.analyses || []);
+  } catch (error) {
+    state.history = [];
+    state.historyError = error.message || "Could not load history.";
+  } finally {
+    state.historyLoading = false;
+    renderHistory();
+  }
 }
 
 function statusLabel(status) {
@@ -523,6 +630,7 @@ async function analyzeQueue() {
   setStatusMessage(`Finished. ${completed} completed${failed ? `, ${failed} failed` : ""}.`);
   state.running = false;
   render();
+  loadHistory();
 }
 
 function bindEvents() {
@@ -559,6 +667,7 @@ function bindEvents() {
 
   els.analyzeButton.addEventListener("click", analyzeQueue);
   els.clearButton.addEventListener("click", clearItems);
+  els.refreshHistoryButton.addEventListener("click", loadHistory);
   els.apiKeyButton.addEventListener("click", () => {
     const key = els.apiKeyInput.value.trim();
     if (!key) {
@@ -595,4 +704,6 @@ bindEvents();
 restoreSession();
 renderAuth();
 render();
+renderHistory();
 initGoogleSignIn();
+loadHistory();

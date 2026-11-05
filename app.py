@@ -34,6 +34,7 @@ _GEO_FAILURE_CACHE_TTL_SECONDS = int(os.getenv("GEO_FAILURE_CACHE_TTL_SECONDS", 
 _geo_cache = {}
 _DATABASE_URL = os.getenv("DATABASE_URL")
 _ANALYTICS_RETENTION_DAYS = int(os.getenv("ANALYTICS_RETENTION_DAYS", "30"))
+_USER_ANALYSIS_RETENTION_DAYS = int(os.getenv("USER_ANALYSIS_RETENTION_DAYS", "365"))
 _analytics_last_cleanup_ts = 0.0
 
 _API_KEY_PREFIX_LEN = int(os.getenv("API_KEY_PREFIX_LEN", "24"))
@@ -267,22 +268,18 @@ def auth_google():
         if ti is None:
             return jsonify({"error": "invalid_google_token"}), 401
 
-        # tokeninfo may not include `user_id` for all token types; use userinfo as a reliable fallback.
-        sub = str(ti.get("user_id") or "")
-        email = ti.get("email")
-        if not sub:
-            ui = _google_userinfo(at)
-            if ui is not None:
-                sub = str(ui.get("sub") or ui.get("id") or "")
-                email = ui.get("email") or email
+        # tokeninfo may not include `user_id` for all token types; userinfo also provides profile details.
+        ui = _google_userinfo(at) or {}
+        sub = str(ti.get("user_id") or ui.get("sub") or ui.get("id") or "")
+        email = ti.get("email") or ui.get("email")
         if not sub:
             return jsonify({"error": "invalid_google_token"}), 401
 
         token = _issue_jwt(
             sub=f"google:{sub}",
             email=email,
-            name=None,
-            picture=None,
+            name=ui.get("name"),
+            picture=ui.get("picture"),
         )
         return jsonify(token)
 
@@ -326,10 +323,16 @@ def _handle_c2pa_request():
 
         c2pa_label = _c2pa_result_label(detailed)
         c2pa_origin = _c2pa_origin(detailed)
+        provenance_source = _friendly_c2pa_source(c2pa_origin)
         _record_analysis_result(
             "c2pa",
             tmp_path,
-            result={"label": c2pa_label, "band": c2pa_label, "origin": c2pa_origin},
+            result={
+                "label": c2pa_label,
+                "band": c2pa_label,
+                "origin": c2pa_origin,
+                "provenance_source": provenance_source,
+            },
             file_mime=f.mimetype,
         )
         return jsonify(
@@ -338,6 +341,7 @@ def _handle_c2pa_request():
                 "credentials_found": c2pa_label == "credentials_found",
                 "result_band": c2pa_label,
                 "origin": c2pa_origin,
+                "source": provenance_source,
                 "c2pa": detailed,
             }
         )
@@ -529,23 +533,38 @@ def _maybe_cleanup_analytics():
     if now - _analytics_last_cleanup_ts < 3600:
         return
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_ANALYTICS_RETENTION_DAYS)
+    anonymous_cutoff = datetime.now(timezone.utc) - timedelta(days=_ANALYTICS_RETENTION_DAYS)
+    user_cutoff = datetime.now(timezone.utc) - timedelta(days=_USER_ANALYSIS_RETENTION_DAYS)
 
     try:
         if _DATABASE_URL:
             conn = _pg_conn()
             try:
                 cur = conn.cursor()
-                cur.execute("DELETE FROM api_requests WHERE ts_utc < %s", (cutoff,))
-                cur.execute("DELETE FROM analysis_results WHERE ts_utc < %s", (cutoff,))
+                cur.execute("DELETE FROM api_requests WHERE ts_utc < %s", (anonymous_cutoff,))
+                cur.execute(
+                    "DELETE FROM analysis_results WHERE ts_utc < %s AND user_sub IS NULL AND api_key_id IS NULL",
+                    (anonymous_cutoff,),
+                )
+                cur.execute(
+                    "DELETE FROM analysis_results WHERE ts_utc < %s AND (user_sub IS NOT NULL OR api_key_id IS NOT NULL)",
+                    (user_cutoff,),
+                )
                 conn.commit()
             finally:
                 conn.close()
         else:
             conn = _sqlite_conn()
             try:
-                conn.execute("DELETE FROM api_requests WHERE ts_utc < ?", (cutoff.isoformat(),))
-                conn.execute("DELETE FROM analysis_results WHERE ts_utc < ?", (cutoff.isoformat(),))
+                conn.execute("DELETE FROM api_requests WHERE ts_utc < ?", (anonymous_cutoff.isoformat(),))
+                conn.execute(
+                    "DELETE FROM analysis_results WHERE ts_utc < ? AND user_sub IS NULL AND api_key_id IS NULL",
+                    (anonymous_cutoff.isoformat(),),
+                )
+                conn.execute(
+                    "DELETE FROM analysis_results WHERE ts_utc < ? AND (user_sub IS NOT NULL OR api_key_id IS NOT NULL)",
+                    (user_cutoff.isoformat(),),
+                )
                 conn.commit()
             finally:
                 conn.close()
@@ -604,6 +623,10 @@ def _ensure_analytics_schema():
                   region TEXT,
                   city TEXT,
                   api_key_id BIGINT,
+                  user_sub TEXT,
+                  user_email TEXT,
+                  user_name TEXT,
+                  provenance_source TEXT,
                   error TEXT
                 )
                 """
@@ -613,6 +636,11 @@ def _ensure_analytics_schema():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_channel ON analysis_results(channel)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_geo ON analysis_results(country, region)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_image_hash ON analysis_results(image_sha256)")
+            cur.execute("ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS user_sub TEXT")
+            cur.execute("ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS user_email TEXT")
+            cur.execute("ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS user_name TEXT")
+            cur.execute("ALTER TABLE analysis_results ADD COLUMN IF NOT EXISTS provenance_source TEXT")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_user_ts ON analysis_results(user_sub, ts_utc)")
             conn.commit()
         finally:
             conn.close()
@@ -664,6 +692,10 @@ def _ensure_analytics_schema():
               region TEXT,
               city TEXT,
               api_key_id INTEGER,
+              user_sub TEXT,
+              user_email TEXT,
+              user_name TEXT,
+              provenance_source TEXT,
               error TEXT
             )
             """
@@ -673,6 +705,17 @@ def _ensure_analytics_schema():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_channel ON analysis_results(channel)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_geo ON analysis_results(country, region)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_image_hash ON analysis_results(image_sha256)")
+        for column, definition in (
+            ("user_sub", "TEXT"),
+            ("user_email", "TEXT"),
+            ("user_name", "TEXT"),
+            ("provenance_source", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE analysis_results ADD COLUMN {column} {definition}")
+            except sqlite3.OperationalError:
+                pass
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_analysis_results_user_ts ON analysis_results(user_sub, ts_utc)")
         conn.commit()
     finally:
         conn.close()
@@ -799,6 +842,41 @@ def _c2pa_origin(detailed):
     return _claim_generator_from(detailed)
 
 
+def _friendly_c2pa_source(origin):
+    if not origin:
+        return None
+    text = str(origin).lower()
+    checks = (
+        ("Gemini", "Google Gemini"),
+        ("Imagen", "Google Imagen"),
+        ("Veo", "Google Veo"),
+        ("Google", "Google"),
+        ("OpenAI", "OpenAI"),
+        ("DALL", "OpenAI"),
+        ("ChatGPT", "OpenAI"),
+        ("Sora", "OpenAI"),
+        ("Midjourney", "Midjourney"),
+        ("Firefly", "Adobe Firefly"),
+        ("Adobe", "Adobe"),
+        ("Stable Diffusion", "Stability AI"),
+        ("Stability", "Stability AI"),
+        ("Meta", "Meta"),
+        ("Microsoft Designer", "Microsoft Designer"),
+        ("Bing", "Microsoft"),
+        ("Canva", "Canva"),
+        ("Ideogram", "Ideogram"),
+        ("Leonardo", "Leonardo AI"),
+        ("Runway", "Runway"),
+        ("Flux", "Black Forest Labs"),
+        ("TikTok", "TikTok"),
+        ("ByteDance", "ByteDance"),
+    )
+    for needle, source in checks:
+        if needle.lower() in text:
+            return source
+    return str(origin).strip()[:128] or None
+
+
 def _c2pa_result_label(detailed):
     detailed = _parse_c2pa_detailed(detailed)
     if not isinstance(detailed, dict):
@@ -857,6 +935,10 @@ def _record_analysis_result(analysis_type: str, image_path: str | None, result=N
             "region": geo.get("region"),
             "city": geo.get("city"),
             "api_key_id": int(getattr(g, "api_key_id", 0) or 0) or None,
+            "user_sub": getattr(g, "user_sub", None),
+            "user_email": getattr(g, "user_email", None),
+            "user_name": getattr(g, "user_name", None),
+            "provenance_source": result.get("provenance_source") if isinstance(result, dict) else None,
             "error": str(error)[:1000] if error else None,
         }
 
@@ -1059,6 +1141,7 @@ def _auth_before_request():
         if jwt_payload is not None:
             g.user_sub = jwt_payload.get("sub")
             g.user_email = jwt_payload.get("email")
+            g.user_name = jwt_payload.get("name")
             return None
 
         _ensure_auth_schema()
@@ -1503,6 +1586,104 @@ def web_config():
     return jsonify({"google_client_id": _WEB_GOOGLE_CLIENT_ID})
 
 
+@app.get("/api/my-analyses")
+def my_analyses():
+    _ensure_analytics_schema()
+
+    user_sub = getattr(g, "user_sub", None)
+    api_key_id = getattr(g, "api_key_id", None)
+    if not user_sub and not api_key_id:
+        return jsonify({"status": "failure", "error": "Authentication required"}), 401
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    except ValueError:
+        limit = 100
+
+    fields = [
+        "id",
+        "ts_utc",
+        "analysis_type",
+        "endpoint",
+        "channel",
+        "status",
+        "result_label",
+        "result_band",
+        "p_ai",
+        "backend",
+        "provenance_source",
+        "image_sha256",
+        "image_bytes",
+        "file_mime",
+        "error",
+    ]
+    clauses = []
+    params = []
+    placeholder = "%s" if _DATABASE_URL else "?"
+
+    if user_sub:
+        clauses.append(f"user_sub = {placeholder}")
+        params.append(user_sub)
+    else:
+        clauses.append(f"api_key_id = {placeholder}")
+        params.append(api_key_id)
+
+    start = (request.args.get("start") or request.args.get("from") or "").strip()
+    end = (request.args.get("end") or request.args.get("to") or "").strip()
+    analysis_type = (request.args.get("analysis_type") or "").strip()
+    if start:
+        clauses.append(f"ts_utc >= {placeholder}")
+        params.append(start)
+    if end:
+        clauses.append(f"ts_utc <= {placeholder}")
+        params.append(end)
+    if analysis_type:
+        clauses.append(f"analysis_type = {placeholder}")
+        params.append(analysis_type)
+
+    sql = (
+        f"SELECT {', '.join(fields)} FROM analysis_results "
+        f"WHERE {' AND '.join(clauses)} ORDER BY ts_utc DESC, id DESC LIMIT {limit}"
+    )
+
+    try:
+        if _DATABASE_URL:
+            conn = _pg_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, tuple(params))
+                rows = [dict(zip(fields, row)) for row in cur.fetchall()]
+            finally:
+                conn.close()
+        else:
+            conn = _sqlite_conn()
+            try:
+                rows = [dict(row) for row in conn.execute(sql, tuple(params)).fetchall()]
+            finally:
+                conn.close()
+    except Exception as e:
+        return jsonify({"status": "failure", "error": f"Could not load analyses: {str(e)}"}), 500
+
+    for row in rows:
+        ts = row.get("ts_utc")
+        row["ts_utc"] = ts.isoformat() if hasattr(ts, "isoformat") else str(ts) if ts is not None else None
+        if row.get("image_sha256"):
+            row["image_sha256"] = row["image_sha256"][:16]
+
+    return jsonify(
+        {
+            "status": "success",
+            "user": {
+                "sub": user_sub,
+                "email": getattr(g, "user_email", None),
+                "name": getattr(g, "user_name", None),
+                "api_key_id": api_key_id,
+            },
+            "analyses": rows,
+        }
+    )
+
+
 @app.get("/privacy")
 def privacy_policy():
     html = """<!doctype html>
@@ -1528,7 +1709,8 @@ def privacy_policy():
     <ul>
       <li>IP address</li>
       <li>Request metadata (timestamp, endpoint path, HTTP method, status code)</li>
-      <li>Analysis metadata (analysis type, result band, client channel, file type/size, image hash)</li>
+      <li>Analysis metadata (analysis type, result band, provenance source, client channel, file type/size, image hash)</li>
+      <li>Signed-in account identifier, email, and name, when a user signs in with Google</li>
       <li>Approximate location derived from IP (country/region/city), when available</li>
     </ul>
 
@@ -1541,7 +1723,7 @@ def privacy_policy():
 
     <h2>Data retention</h2>
     <p>
-      We retain analytics data for up to <strong>30 days</strong> and then delete older records.
+      We retain anonymous analytics data for up to <strong>30 days</strong>. Signed-in and API-key analysis history is retained for up to <strong>365 days</strong> so users can view their dashboard on return visits.
     </p>
 
     <h2>Contact</h2>
