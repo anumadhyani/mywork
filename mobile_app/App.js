@@ -347,7 +347,9 @@ export default function App() {
           <Text style={styles.resultTitle}>Provenance (C2PA)</Text>
           <Text style={styles.resultSubtext}>
             {c2pa.status === 'success'
-              ? 'Content credentials found.'
+              ? (c2pa.credentials_found
+                ? `Content credentials found${c2pa.origin ? ` — ${c2pa.origin}` : ''}`
+                : 'No content credentials found.')
               : c2pa.error || 'No content credentials found.'}
           </Text>
         </View>

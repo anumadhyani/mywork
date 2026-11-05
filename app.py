@@ -316,18 +316,31 @@ def _handle_c2pa_request():
         if verify:
             settings = c2pa.Settings.from_dict({"verify": {"verify_cert_anchors": False}})
 
-        with c2pa.Context(settings) as context:
-            with c2pa.Reader(tmp_path, context=context) as reader:
-                detailed = reader.detailed_json()
+        try:
+            with c2pa.Context(settings) as context:
+                with c2pa.Reader(tmp_path, context=context) as reader:
+                    detailed_raw = reader.detailed_json()
+            detailed = _parse_c2pa_detailed(detailed_raw)
+        except c2pa.C2paError.ManifestNotFound:
+            detailed = {"manifest_store": {}, "active_manifest": None, "credentials_found": False}
 
         c2pa_label = _c2pa_result_label(detailed)
+        c2pa_origin = _c2pa_origin(detailed)
         _record_analysis_result(
             "c2pa",
             tmp_path,
-            result={"label": c2pa_label, "band": c2pa_label},
+            result={"label": c2pa_label, "band": c2pa_label, "origin": c2pa_origin},
             file_mime=f.mimetype,
         )
-        return jsonify({"status": "success", "c2pa": detailed})
+        return jsonify(
+            {
+                "status": "success",
+                "credentials_found": c2pa_label == "credentials_found",
+                "result_band": c2pa_label,
+                "origin": c2pa_origin,
+                "c2pa": detailed,
+            }
+        )
     except Exception as e:
         _record_analysis_result("c2pa", tmp_path, error=e, file_mime=f.mimetype)
         return jsonify({"error": f"C2PA read failed: {str(e)}", "status": "failure"}), 500
@@ -710,12 +723,93 @@ def _int_or_none(value):
         return None
 
 
+def _parse_c2pa_detailed(raw):
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"manifests": parsed} if isinstance(parsed, list) else {"raw": parsed}
+        except Exception:
+            return {"raw": raw, "credentials_found": True}
+    return {} if raw is None else {"raw": raw, "credentials_found": True}
+
+
+def _first_c2pa_manifest(store, active_id=None):
+    candidates = []
+    if isinstance(store, dict):
+        if active_id and isinstance(store.get(active_id), dict):
+            candidates.append(store[active_id])
+        candidates.extend(v for v in store.values() if isinstance(v, dict))
+    elif isinstance(store, list):
+        candidates.extend(v for v in store if isinstance(v, dict))
+    return candidates
+
+
+def _claim_generator_from(value, depth=0):
+    if depth > 5:
+        return None
+    if isinstance(value, dict):
+        for key in ("claim_generator", "claimGenerator", "generator"):
+            claim = value.get(key)
+            if isinstance(claim, str) and claim.strip():
+                return claim.strip()
+        for child in value.values():
+            claim = _claim_generator_from(child, depth + 1)
+            if claim:
+                return claim
+    elif isinstance(value, list):
+        for child in value:
+            claim = _claim_generator_from(child, depth + 1)
+            if claim:
+                return claim
+    return None
+
+
+def _c2pa_origin(detailed):
+    detailed = _parse_c2pa_detailed(detailed)
+    if not detailed:
+        return None
+
+    direct = detailed.get("origin") or detailed.get("claim_generator") or detailed.get("claimGenerator")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+
+    active = detailed.get("active_manifest") or detailed.get("activeManifest")
+    active_id = active if isinstance(active, str) else None
+    stores = [
+        detailed.get("manifest_store"),
+        detailed.get("manifestStore"),
+        detailed.get("manifests"),
+        detailed.get("manifest_list"),
+    ]
+    for store in stores:
+        for manifest in _first_c2pa_manifest(store, active_id):
+            claim = _claim_generator_from(manifest)
+            if claim:
+                return claim
+
+    if isinstance(active, dict):
+        claim = _claim_generator_from(active)
+        if claim:
+            return claim
+
+    return _claim_generator_from(detailed)
+
+
 def _c2pa_result_label(detailed):
+    detailed = _parse_c2pa_detailed(detailed)
     if not isinstance(detailed, dict):
         return "no_credentials"
+    if "credentials_found" in detailed:
+        return "credentials_found" if detailed.get("credentials_found") else "no_credentials"
+
     manifest_store = detailed.get("manifest_store") or detailed.get("manifestStore") or {}
     manifests = detailed.get("manifests") or detailed.get("manifest_list") or []
-    if manifest_store or manifests:
+    active = detailed.get("active_manifest") or detailed.get("activeManifest")
+    if manifest_store or manifests or isinstance(active, dict) or _c2pa_origin(detailed):
         return "credentials_found"
     return "no_credentials"
 

@@ -308,19 +308,33 @@ function aiProbability(item) {
 }
 
 function c2paOrigin(detailed) {
-  if (!detailed || typeof detailed !== "object") return null;
-  const manifestStore = detailed.manifest_store || detailed.manifestStore || null;
+  if (!detailed) return null;
+  if (typeof detailed === "string") {
+    try {
+      detailed = JSON.parse(detailed);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof detailed !== "object") return null;
+  const manifestStore = detailed.manifest_store || detailed.manifestStore || detailed.manifests || null;
   const activeId = detailed.active_manifest || detailed.activeManifest || null;
-  const active = manifestStore && activeId && manifestStore[activeId] ? manifestStore[activeId] : null;
-  return active?.claim_generator || active?.claimGenerator || detailed.claim_generator || detailed.claimGenerator || null;
+  let active = manifestStore && activeId && manifestStore[activeId] ? manifestStore[activeId] : null;
+  if (!active && manifestStore && typeof manifestStore === "object") {
+    active = Object.values(manifestStore).find((manifest) => manifest && typeof manifest === "object") || null;
+  }
+  return detailed.origin || active?.claim_generator || active?.claimGenerator || detailed.claim_generator || detailed.claimGenerator || null;
 }
 
 function provenanceText(item) {
   if (!els.includeC2pa.checked && !item.c2pa) return "Provenance check skipped";
   if (item.c2pa?.error) return "Provenance check unavailable";
-  if (item.c2pa?.c2pa) {
-    const origin = c2paOrigin(item.c2pa.c2pa);
-    return origin ? `Source: ${origin}` : "No provenance credentials found";
+  if (item.c2pa?.status === "success") {
+    const origin = item.c2pa.origin || c2paOrigin(item.c2pa.c2pa);
+    if (item.c2pa.credentials_found === false || item.c2pa.result_band === "no_credentials") {
+      return "No provenance credentials found";
+    }
+    return origin ? `Source: ${origin}` : "Provenance credentials found";
   }
   return "Provenance pending";
 }

@@ -230,15 +230,18 @@ document.addEventListener('DOMContentLoaded', function() {
       if (typeof detailed === 'string') {
         const s = detailed.trim();
         if (!s) return null;
-        return null;
+        detailed = JSON.parse(s);
       }
 
       if (typeof detailed !== 'object') return null;
 
-      const manifestStore = detailed.manifest_store || detailed.manifestStore || null;
+      const manifestStore = detailed.manifest_store || detailed.manifestStore || detailed.manifests || null;
       const activeId = detailed.active_manifest || detailed.activeManifest || null;
-      const active = (manifestStore && activeId && manifestStore[activeId]) ? manifestStore[activeId] : null;
-      const claimGenerator = (active && (active.claim_generator || active.claimGenerator)) || detailed.claim_generator || detailed.claimGenerator || null;
+      let active = (manifestStore && activeId && manifestStore[activeId]) ? manifestStore[activeId] : null;
+      if (!active && manifestStore && typeof manifestStore === 'object') {
+        active = Object.values(manifestStore).find((manifest) => manifest && typeof manifest === 'object') || null;
+      }
+      const claimGenerator = detailed.origin || (active && (active.claim_generator || active.claimGenerator)) || detailed.claim_generator || detailed.claimGenerator || null;
 
       if (claimGenerator) return claimGenerator;
       return null;
@@ -415,7 +418,7 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             if (c2paResponse.ok) {
               const c2paData = await c2paResponse.json();
-              const origin = (c2paData && c2paData.status === 'success') ? _c2paOrigin(c2paData.c2pa) : null;
+              const origin = (c2paData && c2paData.status === 'success') ? (c2paData.origin || _c2paOrigin(c2paData.c2pa)) : null;
               if (origin) {
                 resultText.textContent = _sentenceWithOrigin(baseSentence, origin);
               }
