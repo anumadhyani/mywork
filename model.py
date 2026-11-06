@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from functools import lru_cache
 
 import joblib
@@ -113,7 +114,8 @@ def _load_embedding_stack():
         session = ort.InferenceSession(DEFAULT_EMBEDDING_ONNX_PATH, providers=["CPUExecutionProvider"])
         clf = joblib.load(DEFAULT_EMBEDDING_CLF_PATH)
         return session, clf, Image
-    except Exception:
+    except Exception as e:
+        logging.warning("embedding_stack_load_failed %s: %s", type(e).__name__, e)
         return None
 
 

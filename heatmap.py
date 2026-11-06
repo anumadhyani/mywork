@@ -5,7 +5,17 @@ import cv2
 import numpy as np
 from PIL import Image, ImageFilter
 
-from model import predict_embedding_p_ai_pil
+from model import predict_embedding_p_ai_pil, predict_image
+
+
+def _predict_p_ai(image, work_path: str):
+    p = predict_embedding_p_ai_pil(image)
+    if p is not None:
+        return p
+    image.save(work_path, "JPEG", quality=90)
+    result = predict_image(work_path)
+    proba = result.get("proba") if isinstance(result, dict) else None
+    return float(proba[1]) if isinstance(proba, (list, tuple)) and len(proba) >= 2 else None
 
 GRID_SIZE = int(os.getenv("AI_HEATMAP_GRID_SIZE", "8"))
 MAX_DIM = int(os.getenv("AI_HEATMAP_MAX_DIM", "448"))
@@ -30,7 +40,8 @@ def generate_ai_heatmap(image_path: str, grid_size: int = GRID_SIZE):
     img.thumbnail((MAX_DIM, MAX_DIM))
     w, h = img.size
 
-    baseline = predict_embedding_p_ai_pil(img)
+    work_path = os.path.splitext(image_path)[0] + ".occl.jpg"
+    baseline = _predict_p_ai(img, work_path)
     if baseline is None:
         return None
 
@@ -45,7 +56,7 @@ def generate_ai_heatmap(image_path: str, grid_size: int = GRID_SIZE):
                 int((c + 1) * cell_w),
                 int((r + 1) * cell_h),
             )
-            p_masked = predict_embedding_p_ai_pil(_masked_variant(img, box))
+            p_masked = _predict_p_ai(_masked_variant(img, box), work_path)
             importance = max(0.0, baseline - (p_masked if p_masked is not None else baseline))
             heat[r, c] = importance
             cells.append({"row": r, "col": c, "box": list(box), "importance": round(float(importance), 4)})
