@@ -104,19 +104,37 @@ def load_model(model_path: str = DEFAULT_MODEL_PATH):
 
 @lru_cache(maxsize=1)
 def _load_embedding_stack():
-    if not (os.path.exists(DEFAULT_EMBEDDING_ONNX_PATH) and os.path.exists(DEFAULT_EMBEDDING_CLF_PATH)):
+    onnx_ok = os.path.exists(DEFAULT_EMBEDDING_ONNX_PATH)
+    clf_ok = os.path.exists(DEFAULT_EMBEDDING_CLF_PATH)
+    if not (onnx_ok and clf_ok):
+        logging.warning(
+            "embedding_stack_missing onnx=%s(%s) clf=%s(%s) cwd=%s",
+            DEFAULT_EMBEDDING_ONNX_PATH, onnx_ok,
+            DEFAULT_EMBEDDING_CLF_PATH, clf_ok,
+            os.getcwd(),
+        )
         return None
 
     try:
         import onnxruntime as ort
-        from PIL import Image
-
-        session = ort.InferenceSession(DEFAULT_EMBEDDING_ONNX_PATH, providers=["CPUExecutionProvider"])
-        clf = joblib.load(DEFAULT_EMBEDDING_CLF_PATH)
-        return session, clf, Image
     except Exception as e:
-        logging.warning("embedding_stack_load_failed %s: %s", type(e).__name__, e)
+        logging.warning("embedding_stack_onnxruntime_import_failed %s: %s", type(e).__name__, e)
         return None
+
+    try:
+        session = ort.InferenceSession(DEFAULT_EMBEDDING_ONNX_PATH, providers=["CPUExecutionProvider"])
+    except Exception as e:
+        logging.warning("embedding_stack_onnx_session_failed %s: %s", type(e).__name__, e)
+        return None
+
+    try:
+        clf = joblib.load(DEFAULT_EMBEDDING_CLF_PATH)
+    except Exception as e:
+        logging.warning("embedding_stack_joblib_failed %s: %s", type(e).__name__, e)
+        return None
+
+    from PIL import Image
+    return session, clf, Image
 
 
 def _preprocess_224_rgb(image_path: str, Image):
