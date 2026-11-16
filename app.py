@@ -1617,7 +1617,7 @@ def web_config():
     return jsonify({"google_client_id": _WEB_GOOGLE_CLIENT_ID})
 
 
-@app.get("/api/health")
+@app.get("/health/model")
 def api_health():
     return jsonify({"status": "ok", "embedding_stack": embedding_stack_status()})
 
