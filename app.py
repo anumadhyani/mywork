@@ -21,7 +21,7 @@ import jwt
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token as google_id_token
 
-from model import DEFAULT_MODEL_PATH, predict_image
+from model import DEFAULT_MODEL_PATH, embedding_stack_status, predict_image
 
 
 app = Flask(__name__)
@@ -1615,6 +1615,11 @@ def web_app_asset(filename: str):
 @app.get("/web-config")
 def web_config():
     return jsonify({"google_client_id": _WEB_GOOGLE_CLIENT_ID})
+
+
+@app.get("/api/health")
+def api_health():
+    return jsonify({"status": "ok", "embedding_stack": embedding_stack_status()})
 
 
 @app.get("/api/my-analyses")
