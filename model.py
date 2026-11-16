@@ -20,15 +20,41 @@ DEFAULT_EMBEDDING_ONNX_PATH = os.getenv(
 )
 
 _MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
-_DEFAULT_SGD_CLF_V2 = os.path.join(_MODELS_DIR, "embedding_sgd_logreg_v2.joblib")
-_DEFAULT_SGD_CLF = os.path.join(_MODELS_DIR, "embedding_sgd_logreg.joblib")
-_DEFAULT_LOGREG_CLF = os.path.join(_MODELS_DIR, "embedding_logreg.joblib")
-_DEFAULT_CLF = next(
-    (path for path in (_DEFAULT_SGD_CLF_V2, _DEFAULT_SGD_CLF, _DEFAULT_LOGREG_CLF) if os.path.exists(path)),
-    _DEFAULT_LOGREG_CLF,
-)
+_CLF_CANDIDATES = [
+    os.path.join(_MODELS_DIR, name)
+    for name in (
+        "embedding_head_v3.joblib",
+        "embedding_sgd_logreg_v2.joblib",
+        "embedding_sgd_logreg.joblib",
+        "embedding_logreg.joblib",
+    )
+]
 
-DEFAULT_EMBEDDING_CLF_PATH = os.getenv("EMBEDDING_CLF_PATH") or _DEFAULT_CLF
+DEFAULT_EMBEDDING_CLF_PATH = os.getenv("EMBEDDING_CLF_PATH") or _CLF_CANDIDATES[0]
+
+class LinearBinaryHead:
+    """Pure-numpy linear binary head (replaces pickled SGDClassifier internals)."""
+
+    def __init__(self, coef, intercept):
+        self.coef = np.asarray(coef, dtype=np.float64).reshape(1, -1)
+        self.intercept = float(np.asarray(intercept, dtype=np.float64).reshape(-1)[0])
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        return np.asarray(X, dtype=np.float64) @ self.coef[0] + self.intercept
+
+
+class SigmoidBinaryCalibrator:
+    """Pure-numpy 1-D logistic calibrator (replaces pickled LogisticRegression)."""
+
+    def __init__(self, coef, intercept):
+        self.coef = float(np.asarray(coef, dtype=np.float64).reshape(-1)[0])
+        self.intercept = float(np.asarray(intercept, dtype=np.float64).reshape(-1)[0])
+
+    def predict_proba(self, S: np.ndarray) -> np.ndarray:
+        z = np.asarray(S, dtype=np.float64).reshape(-1) * self.coef + self.intercept
+        p_ai = 1.0 / (1.0 + np.exp(-z))
+        return np.stack([1.0 - p_ai, p_ai], axis=1)
+
 
 class SigmoidCalibratedBinaryClassifier:
     """Simple Platt scaling (sigmoid calibration) wrapper.
@@ -108,12 +134,15 @@ _EMBEDDING_STACK_ERROR = "not attempted"
 @lru_cache(maxsize=1)
 def _load_embedding_stack():
     global _EMBEDDING_STACK_ERROR
-    onnx_ok = os.path.exists(DEFAULT_EMBEDDING_ONNX_PATH)
-    clf_ok = os.path.exists(DEFAULT_EMBEDDING_CLF_PATH)
-    if not (onnx_ok and clf_ok):
+    if os.getenv("EMBEDDING_CLF_PATH"):
+        candidates = [DEFAULT_EMBEDDING_CLF_PATH]
+    else:
+        candidates = [p for p in _CLF_CANDIDATES if os.path.exists(p)]
+
+    if not (os.path.exists(DEFAULT_EMBEDDING_ONNX_PATH) and candidates):
         _EMBEDDING_STACK_ERROR = (
-            f"missing onnx={DEFAULT_EMBEDDING_ONNX_PATH}({onnx_ok}) "
-            f"clf={DEFAULT_EMBEDDING_CLF_PATH}({clf_ok}) cwd={os.getcwd()}"
+            f"missing onnx={DEFAULT_EMBEDDING_ONNX_PATH}({os.path.exists(DEFAULT_EMBEDDING_ONNX_PATH)}) "
+            f"clf_candidates={len(candidates)} cwd={os.getcwd()}"
         )
         logging.warning("embedding_stack_missing %s", _EMBEDDING_STACK_ERROR)
         return None
@@ -132,10 +161,16 @@ def _load_embedding_stack():
         logging.warning("embedding_stack_onnx_session_failed %s", _EMBEDDING_STACK_ERROR)
         return None
 
-    try:
-        clf = joblib.load(DEFAULT_EMBEDDING_CLF_PATH)
-    except Exception as e:
-        _EMBEDDING_STACK_ERROR = f"joblib_load {type(e).__name__}: {e}"
+    clf = None
+    errors = []
+    for path in candidates:
+        try:
+            clf = joblib.load(path)
+            break
+        except Exception as e:
+            errors.append(f"{os.path.basename(path)}: {type(e).__name__}: {e}")
+    if clf is None:
+        _EMBEDDING_STACK_ERROR = "joblib_load " + " | ".join(errors)
         logging.warning("embedding_stack_joblib_failed %s", _EMBEDDING_STACK_ERROR)
         return None
 
