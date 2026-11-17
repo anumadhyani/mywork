@@ -800,14 +800,34 @@ def _first_c2pa_manifest(store, active_id=None):
     return candidates
 
 
+def _claim_generator_name(info):
+    if isinstance(info, str):
+        return info.strip() or None
+    if isinstance(info, dict):
+        name = info.get("name")
+        if isinstance(name, str) and name.strip():
+            version = info.get("version")
+            return f"{name.strip()}/{version}" if version else name.strip()
+    if isinstance(info, list):
+        for item in info:
+            name = _claim_generator_name(item)
+            if name:
+                return name
+    return None
+
+
 def _claim_generator_from(value, depth=0):
     if depth > 5:
         return None
     if isinstance(value, dict):
-        for key in ("claim_generator", "claimGenerator", "generator"):
+        for key in ("claim_generator", "claimGenerator", "generator", "softwareAgent", "software_agent"):
             claim = value.get(key)
             if isinstance(claim, str) and claim.strip():
                 return claim.strip()
+        for key in ("claim_generator_info", "claimGeneratorInfo"):
+            name = _claim_generator_name(value.get(key))
+            if name:
+                return name
         for child in value.values():
             claim = _claim_generator_from(child, depth + 1)
             if claim:
