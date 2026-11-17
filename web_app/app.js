@@ -550,12 +550,13 @@ function renderCard(item) {
         ${item.status === "done" ? `
           <div class="result-badge ${category}">${resultLabel(item)}</div>
           <div class="result-text">${escapeHtml(resultSentence(item))}</div>
+          ${item.c2pa?.ai_provenance ? "" : `
           <div class="metric-grid">
             <div class="metric"><span>Band</span><strong>${escapeHtml(item.result?.band || "—")}</strong></div>
             <div class="metric"><span>AI probability</span><strong>${percent(pAi)}</strong></div>
             <div class="metric"><span>Model</span><strong>${escapeHtml(item.result?.backend || "—")}</strong></div>
             <div class="metric"><span>Uncertainty</span><strong>${item.result?.uncertain ? "Yes" : "No"}</strong></div>
-          </div>
+          </div>`}
           <div class="provenance">${escapeHtml(provenanceText(item))}</div>
           ${category === "synthetic" ? `
             ${item.heatmap?.overlay_png_b64
