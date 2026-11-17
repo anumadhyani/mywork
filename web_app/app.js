@@ -309,7 +309,7 @@ function resultLabel(item) {
   if (item.c2pa?.ai_provenance) return "AI (provenance)";
   const category = categoryForResult(item.result);
   if (category === "synthetic") return "Likely AI";
-  if (category === "dubious") return "Dubious";
+  if (category === "dubious") return "Uncertain";
   if (category === "clean") return "No strong AI";
   return "Unknown";
 }
