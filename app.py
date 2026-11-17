@@ -330,7 +330,9 @@ def _handle_c2pa_request():
         c2pa_label = _c2pa_result_label(detailed)
         c2pa_origin = _c2pa_origin(detailed)
         provenance_source = _friendly_c2pa_source(c2pa_origin)
-        ai_provenance = provenance_source in _AI_PROVENANCE_SOURCES
+        c2pa_actions, digital_source_types = _c2pa_actions_and_types(detailed)
+        ai_source_type = bool(set(digital_source_types) & _AI_DIGITAL_SOURCE_TYPES)
+        ai_provenance = provenance_source in _AI_PROVENANCE_SOURCES or ai_source_type
         _record_analysis_result(
             "c2pa",
             tmp_path,
@@ -351,6 +353,8 @@ def _handle_c2pa_request():
                 "origin": c2pa_origin,
                 "source": provenance_source,
                 "ai_provenance": ai_provenance,
+                "actions": c2pa_actions,
+                "digital_source_types": digital_source_types,
                 "c2pa": detailed,
             }
         )
@@ -798,6 +802,58 @@ def _first_c2pa_manifest(store, active_id=None):
     elif isinstance(store, list):
         candidates.extend(v for v in store if isinstance(v, dict))
     return candidates
+
+
+_AI_DIGITAL_SOURCE_TYPES = {
+    "trainedAlgorithmicMedia",
+    "compositeWithTrainedAlgorithmicMedia",
+    "algorithmicallyEnhanced",
+    "softwareImage",
+}
+
+
+def _walk_c2pa(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_c2pa(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_c2pa(child)
+
+
+def _c2pa_actions_and_types(detailed):
+    """Collect c2pa.actions entries and declared digitalSourceType values."""
+    actions, source_types = [], set()
+    for node in _walk_c2pa(detailed):
+        if not isinstance(node, dict):
+            continue
+        label = str(node.get("label") or "")
+        if label not in ("c2pa.actions", "stds.actions", "c2pa.actions.v2"):
+            continue
+        data = node.get("data")
+        if isinstance(data, dict) and isinstance(data.get("actions"), list):
+            entries = data["actions"]
+        elif isinstance(data, list):
+            entries = data
+        else:
+            entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            action = entry.get("action")
+            if isinstance(action, str) and action.strip():
+                actions.append(action.strip())
+            for key in ("digitalSourceType", "digital_source_type"):
+                dst = entry.get(key)
+                if isinstance(dst, str) and dst.strip():
+                    source_types.add(dst.strip().rsplit("/", 1)[-1])
+    for node in _walk_c2pa(detailed):
+        if isinstance(node, dict):
+            dst = node.get("digitalSourceType")
+            if isinstance(dst, str) and dst.strip():
+                source_types.add(dst.strip().rsplit("/", 1)[-1])
+    return sorted(set(actions)), sorted(source_types)
 
 
 def _claim_generator_name(info):

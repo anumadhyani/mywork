@@ -345,6 +345,68 @@ function c2paOrigin(detailed) {
   return detailed.origin || active?.claim_generator || active?.claimGenerator || detailed.claim_generator || detailed.claimGenerator || null;
 }
 
+const DIGITAL_SOURCE_TYPE_LABELS = {
+  trainedAlgorithmicMedia: "AI-generated",
+  compositeWithTrainedAlgorithmicMedia: "partially AI-generated",
+  algorithmicallyEnhanced: "AI-enhanced",
+  softwareImage: "software-generated",
+  algorithmicMedia: "algorithmically generated",
+  compositeSynthetic: "synthetic composite",
+  digitalCapture: "camera capture",
+  compositeCapture: "composite capture",
+  screenCapture: "screen capture",
+  virtualRecording: "virtual recording",
+  negativeFilm: "scanned film",
+  positiveFilm: "scanned film",
+  print: "scanned print",
+  minorHumanEdits: "minor human edits",
+};
+const AI_SOURCE_TYPE_PRIORITY = [
+  "trainedAlgorithmicMedia",
+  "compositeWithTrainedAlgorithmicMedia",
+  "algorithmicallyEnhanced",
+  "softwareImage",
+];
+
+function friendlyDigitalSourceType(types) {
+  if (!Array.isArray(types)) return null;
+  const ordered = [...types].sort(
+    (a, b) => (AI_SOURCE_TYPE_PRIORITY.indexOf(a) + 1 || 99) - (AI_SOURCE_TYPE_PRIORITY.indexOf(b) + 1 || 99)
+  );
+  for (const t of ordered) if (DIGITAL_SOURCE_TYPE_LABELS[t]) return DIGITAL_SOURCE_TYPE_LABELS[t];
+  return null;
+}
+
+const ACTION_LABELS = {
+  "c2pa.created": "created",
+  "c2pa.edited": "edited",
+  "c2pa.published": "published",
+  "c2pa.cropped": "cropped",
+  "c2pa.resized": "resized",
+  "c2pa.filtered": "filtered",
+  "c2pa.color_adjustments": "color adjusted",
+  "c2pa.drawing": "drawn",
+  "c2pa.combined": "combined",
+  "c2pa.placed": "placed",
+  "c2pa.opened": "opened",
+  "c2pa.repackaged": "repackaged",
+  "c2pa.transcoded": "transcoded",
+  "c2pa.removed": "removed",
+  "c2pa.orientation": "reoriented",
+  "c2pa.changed": "changed",
+  "c2pa.saved": "saved",
+  "c2pa.produced": "produced",
+  "c2pa.unknown": "unknown changes",
+};
+
+function friendlyActions(actions) {
+  if (!Array.isArray(actions)) return null;
+  const mapped = actions
+    .filter((a) => typeof a === "string" && a.trim())
+    .map((a) => ACTION_LABELS[a] || a.replace(/^[a-z0-9.]+\./i, "").replace(/[_-]+/g, " "));
+  return mapped.length ? mapped.join(", ") : null;
+}
+
 function provenanceText(item) {
   if (!els.includeC2pa.checked && !item.c2pa) return "Provenance check skipped";
   if (item.c2pa?.error) return "Provenance check unavailable";
@@ -353,7 +415,12 @@ function provenanceText(item) {
     if (item.c2pa.credentials_found === false || item.c2pa.result_band === "no_credentials") {
       return "No provenance credentials found";
     }
-    return source ? `Source: ${source}` : "Provenance credentials found (source unknown)";
+    const parts = [source ? `Source: ${source}` : "Provenance credentials found (source unknown)"];
+    const declared = friendlyDigitalSourceType(item.c2pa.digital_source_types);
+    if (declared) parts.push(`Declared: ${declared}`);
+    const actions = friendlyActions(item.c2pa.actions);
+    if (actions) parts.push(`Actions: ${actions}`);
+    return parts.join(" · ");
   }
   return "Provenance pending";
 }
