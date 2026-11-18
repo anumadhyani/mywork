@@ -1701,6 +1701,107 @@ def api_health():
     return jsonify({"status": "ok", "embedding_stack": embedding_stack_status()})
 
 
+_FEEDBACK_MAX_WORDS = 100
+
+
+def _ensure_feedback_schema():
+    if _DATABASE_URL:
+        conn = _pg_conn()
+        try:
+            conn.cursor().execute(
+                """
+                CREATE TABLE IF NOT EXISTS feedback (
+                  id BIGSERIAL PRIMARY KEY,
+                  ts_utc TIMESTAMPTZ NOT NULL,
+                  channel TEXT,
+                  user_sub TEXT,
+                  user_email TEXT,
+                  user_name TEXT,
+                  api_key_id BIGINT,
+                  filename TEXT,
+                  result_label TEXT,
+                  result_band TEXT,
+                  feedback TEXT NOT NULL
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return
+    conn = _sqlite_conn()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts_utc TEXT NOT NULL,
+              channel TEXT,
+              user_sub TEXT,
+              user_email TEXT,
+              user_name TEXT,
+              api_key_id INTEGER,
+              filename TEXT,
+              result_label TEXT,
+              result_band TEXT,
+              feedback TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _record_feedback(channel, filename, result_label, result_band, text):
+    vals = (
+        datetime.now(timezone.utc).isoformat(),
+        channel,
+        getattr(g, "user_sub", None),
+        getattr(g, "user_email", None),
+        getattr(g, "user_name", None),
+        getattr(g, "api_key_id", None),
+        filename,
+        result_label,
+        result_band,
+        text,
+    )
+    sql = (
+        "INSERT INTO feedback (ts_utc, channel, user_sub, user_email, user_name,"
+        " api_key_id, filename, result_label, result_band, feedback) VALUES (%s)"
+        % ", ".join(["%s"] * 10 if _DATABASE_URL else ["?"] * 10)
+    )
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        (conn.cursor() if _DATABASE_URL else conn).execute(sql, vals)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@app.post("/api/feedback")
+def api_feedback():
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("feedback") or "").strip()
+    if not text:
+        return jsonify({"error": "feedback is required"}), 400
+    if len(text.split()) > _FEEDBACK_MAX_WORDS:
+        return jsonify({"error": "feedback must be 100 words or fewer"}), 400
+    try:
+        _ensure_feedback_schema()
+        _record_feedback(
+            str(data.get("channel") or "web_app")[:32],
+            str(data.get("filename") or "")[:255],
+            str(data.get("result_label") or "")[:64],
+            str(data.get("result_band") or "")[:64],
+            text[:4000],
+        )
+        return jsonify({"status": "ok", "message": "Thank you for the feedback!"})
+    except Exception as e:
+        logging.warning("feedback_record_failed %s: %s", type(e).__name__, e)
+        return jsonify({"error": "feedback could not be saved"}), 500
+
+
 @app.get("/api/my-analyses")
 def my_analyses():
     _ensure_analytics_schema()

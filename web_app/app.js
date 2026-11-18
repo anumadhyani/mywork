@@ -538,6 +538,7 @@ function renderCard(item) {
         <img src="${item.previewUrl}" alt="${escapeHtml(item.name)}" loading="lazy" />
         <span class="status-badge ${item.status}">${statusLabel(item.status)}</span>
         ${canRemove ? `<button class="danger remove-card" data-remove="${item.id}" title="Remove image">×</button>` : ""}
+        ${item.status === "done" && !item.feedbackSent ? `<button class="feedback-icon" data-feedback="${item.id}" title="Share feedback on this result" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></button>` : ""}
       </div>
       <div class="card-body">
         <div>
@@ -565,6 +566,16 @@ function renderCard(item) {
               : `<button class="secondary heatmap-btn" data-heatmap="${item.id}" type="button" ${item.heatmapLoading ? "disabled" : ""}>${item.heatmapLoading ? "Generating heatmap..." : "Show AI-signal heatmap"}</button>
                  ${item.heatmap?.error ? `<div class="error-text">${escapeHtml(item.heatmap.error)}</div>` : ""}`}
           ` : ""}
+          ${item.feedbackOpen && !item.feedbackSent ? `
+            <div class="feedback-box">
+              <textarea class="feedback-input" data-feedback-text="${item.id}" rows="3" maxlength="2000" placeholder="Was this result right or wrong? Tell us in up to 100 words"></textarea>
+              <div class="feedback-row">
+                <span class="feedback-count">0/100 words</span>
+                <button class="secondary feedback-submit" data-feedback-submit="${item.id}" type="button" ${item.feedbackSending ? "disabled" : ""}>${item.feedbackSending ? "Sending..." : "Submit"}</button>
+              </div>
+              ${item.feedbackError ? `<div class="error-text">${escapeHtml(item.feedbackError)}</div>` : ""}
+            </div>` : ""}
+          ${item.feedbackSent ? `<div class="feedback-thanks">Thank you for the feedback!</div>` : ""}
         ` : ""}
 
         ${item.status === "queued" ? `<div class="result-badge neutral">Ready for analysis</div>` : ""}
@@ -619,6 +630,65 @@ function render() {
       if (item && !item.heatmapLoading) generateHeatmap(item);
     });
   });
+  els.resultsGrid.querySelectorAll("[data-feedback]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = state.items.find((i) => i.id === Number(button.dataset.feedback));
+      if (item) {
+        item.feedbackOpen = !item.feedbackOpen;
+        render();
+      }
+    });
+  });
+  els.resultsGrid.querySelectorAll("[data-feedback-submit]").forEach((button) => {
+    button.addEventListener("click", () => submitFeedback(Number(button.dataset.feedbackSubmit)));
+  });
+  els.resultsGrid.querySelectorAll("[data-feedback-text]").forEach((ta) => {
+    ta.addEventListener("input", () => {
+      const count = ta.value.trim().split(/\s+/).filter(Boolean).length;
+      const counter = ta.closest(".feedback-box")?.querySelector(".feedback-count");
+      if (counter) counter.textContent = `${count}/100 words`;
+    });
+  });
+}
+
+async function submitFeedback(id) {
+  const item = state.items.find((i) => i.id === id);
+  if (!item) return;
+  const ta = els.resultsGrid.querySelector(`[data-feedback-text="${id}"]`);
+  const text = (ta?.value || "").trim();
+  const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+  if (!text) {
+    item.feedbackError = "Please enter some feedback";
+    render();
+    return;
+  }
+  if (words > 100) {
+    item.feedbackError = "Feedback must be 100 words or fewer";
+    render();
+    return;
+  }
+  item.feedbackSending = true;
+  item.feedbackError = null;
+  try {
+    await parseApiResponse(await fetch(`${API_BASE}/api/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        feedback: text,
+        filename: item.name,
+        result_label: resultLabel(item),
+        result_band: item.result?.band || null,
+        channel: "web_app",
+      }),
+    }));
+    item.feedbackSent = true;
+    item.feedbackOpen = false;
+  } catch (e) {
+    item.feedbackError = e.message || "Could not send feedback";
+  } finally {
+    item.feedbackSending = false;
+  }
+  render();
 }
 
 function removeItem(id) {

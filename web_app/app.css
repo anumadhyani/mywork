@@ -609,6 +609,62 @@ main {
   width: 30px;
 }
 
+.feedback-icon {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.55);
+  border: none;
+  border-radius: 50%;
+  color: #e2e8f0;
+  cursor: pointer;
+  display: flex;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: 48px;
+  top: 12px;
+  width: 30px;
+}
+
+.feedback-icon:hover {
+  background: rgba(15, 23, 42, 0.8);
+}
+
+.feedback-box {
+  border-top: 1px solid var(--border, #e2e8f0);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+}
+
+.feedback-input {
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px;
+  resize: vertical;
+  width: 100%;
+}
+
+.feedback-row {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.feedback-count {
+  color: var(--muted, #64748b);
+  font-size: 12px;
+}
+
+.feedback-thanks {
+  color: var(--accent, #16a34a);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .card-body {
   display: flex;
   flex: 1;
