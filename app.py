@@ -1074,6 +1074,8 @@ def _record_analysis_result(analysis_type: str, image_path: str | None, result=N
                 conn.commit()
             finally:
                 conn.close()
+        if not error and analysis_type == "ai_detect":
+            _increment_user_usage()
     except Exception as e:
         app.logger.warning("analysis_result_store_failed error=%s", type(e).__name__)
 
@@ -2017,6 +2019,104 @@ _FREE_ANALYSIS_LIMIT = int(os.getenv("FREE_ANALYSIS_LIMIT", "5"))
 _PRICE_PER_IMAGE_INR = int(os.getenv("PRICE_PER_IMAGE_INR", "10"))
 
 
+def _ensure_usage_schema():
+    if _DATABASE_URL:
+        conn = _pg_conn()
+        try:
+            conn.cursor().execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_usage (
+                  user_sub TEXT PRIMARY KEY,
+                  user_email TEXT,
+                  user_name TEXT,
+                  analyses_used BIGINT NOT NULL DEFAULT 0,
+                  first_ts TIMESTAMPTZ,
+                  last_ts TIMESTAMPTZ
+                )
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return
+    conn = _sqlite_conn()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_usage (
+              user_sub TEXT PRIMARY KEY,
+              user_email TEXT,
+              user_name TEXT,
+              analyses_used INTEGER NOT NULL DEFAULT 0,
+              first_ts TEXT,
+              last_ts TEXT
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _user_usage_count(user_sub):
+    """Lifetime analysis count for a user. Seeds from analysis_results once
+    (migration for users who analyzed before this table existed)."""
+    _ensure_usage_schema()
+    _ensure_analytics_schema()
+    ph = "%s" if _DATABASE_URL else "?"
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        cur = conn.cursor() if _DATABASE_URL else conn
+        cur.execute(f"SELECT analyses_used FROM user_usage WHERE user_sub={ph}", (user_sub,))
+        row = cur.fetchone()
+        if row:
+            return int(row[0])
+        used = _count_user_analyses(user_sub)
+        now = datetime.now(timezone.utc).isoformat()
+        cur.execute(
+            f"INSERT INTO user_usage (user_sub, user_email, user_name, analyses_used, first_ts, last_ts) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph})",
+            (user_sub, getattr(g, "user_email", None), getattr(g, "user_name", None), used, now, now),
+        )
+        conn.commit()
+        return used
+    finally:
+        conn.close()
+
+
+def _increment_user_usage():
+    user_sub = getattr(g, "user_sub", None)
+    if not user_sub:
+        return
+    try:
+        _ensure_usage_schema()
+        now = datetime.now(timezone.utc).isoformat()
+        email, name = getattr(g, "user_email", None), getattr(g, "user_name", None)
+        conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+        try:
+            cur = conn.cursor() if _DATABASE_URL else conn
+            cur.execute(
+                (
+                    "INSERT INTO user_usage (user_sub, user_email, user_name, analyses_used, first_ts, last_ts) "
+                    "VALUES ({0},{0},{0},1,{0},{0}) "
+                    "ON CONFLICT (user_sub) DO UPDATE SET "
+                    "analyses_used=user_usage.analyses_used+1, "
+                    "user_email=COALESCE({1}.user_email, user_usage.user_email), "
+                    "user_name=COALESCE({1}.user_name, user_usage.user_name), "
+                    "last_ts={1}.last_ts"
+                ).format(
+                    "%s" if _DATABASE_URL else "?",
+                    "EXCLUDED" if _DATABASE_URL else "excluded",
+                ),
+                (user_sub, email, name, now, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        app.logger.warning("usage_increment_failed", exc_info=True)
+
+
 def _count_user_analyses(user_sub):
     ph = "%s" if _DATABASE_URL else "?"
     conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
@@ -2038,8 +2138,7 @@ def _free_quota_gate():
     if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
         return None
     try:
-        _ensure_analytics_schema()
-        used = _count_user_analyses(g.user_sub)
+        used = _user_usage_count(g.user_sub)
     except Exception as e:
         logging.warning("quota_count_failed %s: %s", type(e).__name__, e)
         return None
@@ -2059,8 +2158,7 @@ def api_usage():
     if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
         return jsonify({"plan": "api_key", "free_limit": None, "used": None})
     try:
-        _ensure_analytics_schema()
-        used = _count_user_analyses(g.user_sub)
+        used = _user_usage_count(g.user_sub)
     except Exception:
         used = None
     return jsonify({

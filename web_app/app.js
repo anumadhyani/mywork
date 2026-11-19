@@ -49,6 +49,9 @@ const els = {
   historyStatus: $("historyStatus"),
   historyList: $("historyList"),
   refreshHistoryButton: $("refreshHistoryButton"),
+  applyHistoryFilter: $("applyHistoryFilter"),
+  historyFrom: $("historyFrom"),
+  historyTo: $("historyTo"),
 };
 
 function escapeHtml(value) {
@@ -506,7 +509,12 @@ async function loadHistory() {
   state.historyError = "";
   renderHistory();
   try {
-    const resp = await fetch(`${API_BASE}/api/my-analyses?limit=10`, {
+    const params = new URLSearchParams({ limit: "500" });
+    const from = els.historyFrom?.value;
+    const to = els.historyTo?.value;
+    if (from) params.set("start", from);
+    if (to) params.set("end", `${to}T23:59:59Z`);
+    const resp = await fetch(`${API_BASE}/api/my-analyses?${params}`, {
       headers: authHeaders(),
     });
     const data = await resp.json().catch(() => null);
@@ -873,6 +881,7 @@ function bindEvents() {
   els.analyzeButton.addEventListener("click", analyzeQueue);
   els.clearButton.addEventListener("click", clearItems);
   els.refreshHistoryButton.addEventListener("click", loadHistory);
+  els.applyHistoryFilter?.addEventListener("click", loadHistory);
   els.apiKeyButton.addEventListener("click", () => {
     const key = els.apiKeyInput.value.trim();
     if (!key) {
