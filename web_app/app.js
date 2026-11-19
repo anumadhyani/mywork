@@ -742,7 +742,7 @@ async function analyzeItem(item, includeC2pa) {
     aiForm.append("file", item.file, item.name);
     const aiResp = await fetch(`${API_BASE}/api/ai-detect`, {
       method: "POST",
-      headers: authHeaders(),
+      headers: { ...authHeaders(), "X-Client-TZ": Intl.DateTimeFormat().resolvedOptions().timeZone || "" },
       body: aiForm,
     });
     if (aiResp.status === 402) {
@@ -779,7 +779,8 @@ async function analyzeItem(item, includeC2pa) {
 async function refreshUsage() {
   if (!els.usageText) return;
   try {
-    const u = await parseApiResponse(await fetch(`${API_BASE}/api/usage`, { headers: authHeaders() }));
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const u = await parseApiResponse(await fetch(`${API_BASE}/api/usage?tz=${encodeURIComponent(tz)}`, { headers: authHeaders() }));
     if (u.used === null || u.used === undefined) {
       els.usageText.textContent = "";
       return;

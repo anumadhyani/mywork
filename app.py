@@ -2027,9 +2027,13 @@ _PRICE_PER_IMAGE_INR = float(os.getenv("PRICE_PER_IMAGE_INR", "10"))
 _PRICE_PER_IMAGE_USD = float(os.getenv("PRICE_PER_IMAGE_USD", "0.50"))
 
 
-def _user_pricing():
+_INDIA_TZ = {"asia/kolkata", "asia/calcutta"}
+
+
+def _user_pricing(tz=None):
+    tz_india = str(tz or "").strip().lower() in _INDIA_TZ
     country = ((_geo_lookup(_get_client_ip()) or {}).get("country") or "").strip().lower()
-    if country in ("india", "in"):
+    if tz_india or country in ("india", "in"):
         return {
             "currency": "INR",
             "price_per_image": _PRICE_PER_IMAGE_INR,
@@ -2172,7 +2176,7 @@ def _free_quota_gate():
         "used": used,
         "free_limit": _FREE_ANALYSIS_LIMIT,
         "pricing_url": "/pricing",
-        **_user_pricing(),
+        **_user_pricing(request.headers.get("X-Client-TZ") or request.form.get("tz")),
     }), 402
 
 
@@ -2188,13 +2192,16 @@ def api_usage():
         "plan": "free" if used is None or used < _FREE_ANALYSIS_LIMIT else "quota_exhausted",
         "free_limit": _FREE_ANALYSIS_LIMIT,
         "used": used,
-        **_user_pricing(),
+        **_user_pricing(request.args.get("tz") or request.headers.get("X-Client-TZ")),
     })
 
 
 @app.get("/public/pricing")
 def public_pricing():
-    return jsonify({"free_limit": _FREE_ANALYSIS_LIMIT, **_user_pricing()})
+    return jsonify({
+        "free_limit": _FREE_ANALYSIS_LIMIT,
+        **_user_pricing(request.args.get("tz") or request.headers.get("X-Client-TZ")),
+    })
 
 
 @app.post("/api/ai-detect")
