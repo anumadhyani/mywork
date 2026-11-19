@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import urllib.parse
 import urllib.request
 
+import requests
+
 from flask import Flask, jsonify, request, g, send_from_directory
 from flask_cors import CORS
 from flask_limiter import Limiter
@@ -2057,11 +2059,13 @@ def _ensure_usage_schema():
                   user_email TEXT,
                   user_name TEXT,
                   analyses_used BIGINT NOT NULL DEFAULT 0,
+                  credits_paid BIGINT NOT NULL DEFAULT 0,
                   first_ts TIMESTAMPTZ,
                   last_ts TIMESTAMPTZ
                 )
                 """
             )
+            conn.cursor().execute("ALTER TABLE user_usage ADD COLUMN IF NOT EXISTS credits_paid BIGINT NOT NULL DEFAULT 0")
             conn.commit()
         finally:
             conn.close()
@@ -2075,29 +2079,38 @@ def _ensure_usage_schema():
               user_email TEXT,
               user_name TEXT,
               analyses_used INTEGER NOT NULL DEFAULT 0,
+              credits_paid INTEGER NOT NULL DEFAULT 0,
               first_ts TEXT,
               last_ts TEXT
             )
             """
         )
+        try:
+            conn.execute("ALTER TABLE user_usage ADD COLUMN credits_paid INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         conn.commit()
     finally:
         conn.close()
 
 
 def _user_usage_count(user_sub):
-    """Lifetime analysis count for a user. Seeds from analysis_results once
-    (migration for users who analyzed before this table existed)."""
+    return _user_usage_row(user_sub)[0]
+
+
+def _user_usage_row(user_sub):
+    """(analyses_used, credits_paid) for a user. Seeds from analysis_results
+    once (migration for users who analyzed before this table existed)."""
     _ensure_usage_schema()
     _ensure_analytics_schema()
     ph = "%s" if _DATABASE_URL else "?"
     conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
     try:
         cur = conn.cursor() if _DATABASE_URL else conn
-        cur.execute(f"SELECT analyses_used FROM user_usage WHERE user_sub={ph}", (user_sub,))
+        cur.execute(f"SELECT analyses_used, credits_paid FROM user_usage WHERE user_sub={ph}", (user_sub,))
         row = cur.fetchone()
         if row:
-            return int(row[0])
+            return int(row[0]), int(row[1] or 0)
         used = _count_user_analyses(user_sub)
         now = datetime.now(timezone.utc).isoformat()
         cur.execute(
@@ -2106,7 +2119,7 @@ def _user_usage_count(user_sub):
             (user_sub, getattr(g, "user_email", None), getattr(g, "user_name", None), used, now, now),
         )
         conn.commit()
-        return used
+        return used, 0
     finally:
         conn.close()
 
@@ -2165,16 +2178,19 @@ def _free_quota_gate():
     if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
         return None
     try:
-        used = _user_usage_count(g.user_sub)
+        used, credits = _user_usage_row(g.user_sub)
     except Exception as e:
         logging.warning("quota_count_failed %s: %s", type(e).__name__, e)
         return None
-    if used < _FREE_ANALYSIS_LIMIT:
+    allowance = _FREE_ANALYSIS_LIMIT + credits
+    if used < allowance:
         return None
     return jsonify({
         "error": "free_quota_exhausted",
         "used": used,
         "free_limit": _FREE_ANALYSIS_LIMIT,
+        "credits_paid": credits,
+        "allowance": allowance,
         "pricing_url": "/pricing",
         **_user_pricing(request.headers.get("X-Client-TZ") or request.form.get("tz")),
     }), 402
@@ -2185,15 +2201,181 @@ def api_usage():
     if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
         return jsonify({"plan": "api_key", "free_limit": None, "used": None})
     try:
-        used = _user_usage_count(g.user_sub)
+        used, credits = _user_usage_row(g.user_sub)
     except Exception:
-        used = None
+        used, credits = None, 0
+    allowance = _FREE_ANALYSIS_LIMIT + credits
     return jsonify({
-        "plan": "free" if used is None or used < _FREE_ANALYSIS_LIMIT else "quota_exhausted",
+        "plan": "quota_exhausted" if used is not None and used >= allowance else "free",
         "free_limit": _FREE_ANALYSIS_LIMIT,
         "used": used,
+        "credits_paid": credits,
+        "allowance": allowance,
+        "remaining": max(0, allowance - used) if used is not None else None,
+        "payments_enabled": bool(_RAZORPAY_KEY_ID and _RAZORPAY_KEY_SECRET),
         **_user_pricing(request.args.get("tz") or request.headers.get("X-Client-TZ")),
     })
+
+
+_RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID", "")
+_RAZORPAY_KEY_SECRET = os.getenv("RAZORPAY_KEY_SECRET", "")
+_RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
+_RAZORPAY_API = "https://api.razorpay.com/v1"
+
+
+def _ensure_payments_schema():
+    ddl_pg = """
+        CREATE TABLE IF NOT EXISTS payments (
+          order_id TEXT PRIMARY KEY,
+          payment_id TEXT,
+          user_sub TEXT NOT NULL,
+          user_email TEXT,
+          images INTEGER NOT NULL,
+          amount_paise BIGINT NOT NULL,
+          currency TEXT NOT NULL,
+          status TEXT NOT NULL,
+          ts_utc TIMESTAMPTZ NOT NULL
+        )
+        """
+    ddl_lite = ddl_pg.replace("TIMESTAMPTZ", "TEXT").replace("BIGINT", "INTEGER")
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        (conn.cursor() if _DATABASE_URL else conn).execute(ddl_pg if _DATABASE_URL else ddl_lite)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mark_payment_paid(order_id, payment_id):
+    """Credits a paid order to the owner's usage row. Idempotent."""
+    _ensure_payments_schema()
+    _ensure_usage_schema()
+    ph = "%s" if _DATABASE_URL else "?"
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        cur = conn.cursor() if _DATABASE_URL else conn
+        cur.execute(f"SELECT user_sub, user_email, images, status FROM payments WHERE order_id={ph}", (order_id,))
+        row = cur.fetchone()
+        if not row or row[3] == "paid":
+            return False
+        cur.execute(
+            f"UPDATE payments SET status='paid', payment_id={ph} WHERE order_id={ph}",
+            (payment_id, order_id),
+        )
+        user_sub, email, images = row[0], row[1], int(row[2])
+        cur.execute(
+            f"INSERT INTO user_usage (user_sub, user_email, analyses_used, credits_paid, first_ts, last_ts) "
+            f"VALUES ({ph},{ph},0,{ph},{ph},{ph}) "
+            f"ON CONFLICT (user_sub) DO UPDATE SET credits_paid=user_usage.credits_paid+{int(images)}",
+            (user_sub, email, images, datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+@app.post("/api/payments/order")
+def create_payment_order():
+    if not (_RAZORPAY_KEY_ID and _RAZORPAY_KEY_SECRET):
+        return jsonify({"error": "payments_not_configured"}), 503
+    user_sub = getattr(g, "user_sub", None)
+    if not user_sub:
+        return jsonify({"error": "sign_in_required"}), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        images = int(data.get("images") or 0)
+    except (TypeError, ValueError):
+        images = 0
+    if images < 1 or images > 10000:
+        return jsonify({"error": "images must be between 1 and 10000"}), 400
+    amount_paise = int(round(_PRICE_PER_IMAGE_INR * 100)) * images
+    try:
+        r = requests.post(
+            f"{_RAZORPAY_API}/orders",
+            auth=(_RAZORPAY_KEY_ID, _RAZORPAY_KEY_SECRET),
+            json={
+                "amount": amount_paise,
+                "currency": "INR",
+                "receipt": f"{user_sub[:20]}:{int(time.time())}",
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        logging.warning("razorpay_order_failed %s: %s", type(e).__name__, e)
+        return jsonify({"error": "payment gateway unreachable"}), 502
+    if not r.ok:
+        logging.warning("razorpay_order_rejected status=%s body=%s", r.status_code, r.text[:300])
+        return jsonify({"error": "payment order rejected"}), 502
+    order = r.json()
+    _ensure_payments_schema()
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        ph = "%s" if _DATABASE_URL else "?"
+        (conn.cursor() if _DATABASE_URL else conn).execute(
+            f"INSERT INTO payments (order_id, user_sub, user_email, images, amount_paise, currency, status, ts_utc) "
+            f"VALUES ({ph},{ph},{ph},{ph},{ph},{ph},'created',{ph})",
+            (order["id"], user_sub, getattr(g, "user_email", None), images,
+             amount_paise, "INR", datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({
+        "status": "ok",
+        "order_id": order["id"],
+        "key_id": _RAZORPAY_KEY_ID,
+        "amount_paise": amount_paise,
+        "currency": "INR",
+        "images": images,
+        "user_email": getattr(g, "user_email", None),
+    })
+
+
+@app.post("/api/payments/verify")
+def verify_payment():
+    if not (_RAZORPAY_KEY_ID and _RAZORPAY_KEY_SECRET):
+        return jsonify({"error": "payments_not_configured"}), 503
+    if not getattr(g, "user_sub", None):
+        return jsonify({"error": "sign_in_required"}), 401
+    data = request.get_json(silent=True) or {}
+    order_id = str(data.get("order_id") or "")
+    payment_id = str(data.get("payment_id") or "")
+    signature = str(data.get("signature") or "")
+    expected = hmac.new(
+        _RAZORPAY_KEY_SECRET.encode(),
+        f"{order_id}|{payment_id}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        return jsonify({"error": "invalid_signature"}), 400
+    _mark_payment_paid(order_id, payment_id)
+    used, credits = _user_usage_row(g.user_sub)
+    return jsonify({"status": "ok", "credits_paid": credits, "remaining": max(0, _FREE_ANALYSIS_LIMIT + credits - used)})
+
+
+@app.post("/public/payments/webhook")
+def payments_webhook():
+    body = request.get_data()
+    if _RAZORPAY_WEBHOOK_SECRET:
+        expected = hmac.new(
+            _RAZORPAY_WEBHOOK_SECRET.encode(), body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected, request.headers.get("X-Razorpay-Signature", "")):
+            return jsonify({"error": "invalid_signature"}), 400
+    try:
+        event = request.get_json(force=True)
+    except Exception:
+        return jsonify({"error": "bad_payload"}), 400
+    if (event or {}).get("event") == "payment.captured":
+        entity = (((event.get("payload") or {}).get("payment") or {}).get("entity") or {})
+        order_id, payment_id = entity.get("order_id"), entity.get("id")
+        if order_id and payment_id:
+            try:
+                _mark_payment_paid(order_id, payment_id)
+            except Exception:
+                logging.warning("webhook_credit_failed", exc_info=True)
+    return jsonify({"status": "ok"})
 
 
 @app.get("/public/pricing")

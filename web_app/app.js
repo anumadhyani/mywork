@@ -785,10 +785,10 @@ async function refreshUsage() {
       els.usageText.textContent = "";
       return;
     }
-    const left = Math.max(0, (u.free_limit || 5) - u.used);
+    const left = u.remaining ?? Math.max(0, (u.free_limit || 5) - u.used);
     els.usageText.innerHTML = left > 0
-      ? `Free analyses left: ${left} of ${u.free_limit} · <a href="/pricing">Pricing</a>`
-      : `Free analyses used (${u.used}/${u.free_limit}) · ${u.price_label || ""} · <a href="/pricing">View pricing</a>`;
+      ? `Analyses left: ${left} (${u.free_limit} free${u.credits_paid ? ` + ${u.credits_paid} paid` : ""}) · <a href="/pricing">Pricing</a>`
+      : `Limit reached (${u.used}/${u.allowance || u.free_limit}) · ${u.price_label || ""} · <a href="/pricing">Buy credits</a>`;
   } catch {
     els.usageText.textContent = "";
   }

@@ -20,6 +20,9 @@
     ul { color: var(--muted); line-height: 1.8; margin: 0; padding-left: 18px; }
     .featured { border-color: var(--accent); box-shadow: 0 8px 24px rgba(79,124,255,.12); }
     .cta { background: var(--accent); border-radius: 10px; color: #fff; display: inline-block; font-weight: 600; margin-top: 18px; padding: 10px 18px; text-decoration: none; }
+    .buy-row { align-items: center; display: flex; gap: 10px; }
+    .buy-row input { border: 1px solid var(--border); border-radius: 10px; font: inherit; padding: 9px 12px; width: 90px; }
+    .buy-row .cta { margin-top: 0; }
     .note { background: #fff; border: 1px solid var(--border); border-radius: 14px; color: var(--muted); margin-top: 28px; padding: 20px 24px; }
     .back { display: inline-block; margin-bottom: 28px; text-decoration: none; }
   </style>
@@ -52,9 +55,53 @@
           <li>Pay only for what you analyze</li>
           <li>Volume and API-key plans available</li>
         </ul>
-        <a class="cta" href="/">Continue to app</a>
+        <div class="buy-row">
+          <input id="buyQty" type="number" min="1" max="10000" value="10" aria-label="Number of images" />
+          <button id="buyBtn" type="button" class="cta" style="border:none;cursor:pointer;">Buy with UPI</button>
+        </div>
+        <p id="buyStatus" style="color:var(--muted);font-size:13px;margin:8px 0 0;"></p>
       </div>
     </div>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script>
+      const JWT_KEY = "truthlens.web.jwt", API_KEY = "truthlens.web.apiKey";
+      function hdrs() {
+        const j = localStorage.getItem(JWT_KEY), k = sessionStorage.getItem(API_KEY);
+        const h = { "Content-Type": "application/json" };
+        if (j) h.Authorization = "Bearer " + j; else if (k) h["X-API-Key"] = k;
+        return h;
+      }
+      const status = (m) => { document.getElementById("buyStatus").textContent = m; };
+      document.getElementById("buyBtn").addEventListener("click", async () => {
+        if (!localStorage.getItem(JWT_KEY) && !sessionStorage.getItem(API_KEY)) {
+          document.getElementById("buyStatus").innerHTML = 'Sign in on the <a href="/">app</a> first — purchases attach to your account.';
+          return;
+        }
+        const images = parseInt(document.getElementById("buyQty").value, 10);
+        if (!images || images < 1) { status("Enter a valid number of images."); return; }
+        try {
+          status("Creating order…");
+          const r = await fetch("/api/payments/order", { method: "POST", headers: hdrs(), body: JSON.stringify({ images }) });
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok) { status(d.error === "payments_not_configured" ? "Payments are coming soon." : (d.error || "Could not create order.")); return; }
+          const rz = new Razorpay({
+            key: d.key_id, amount: d.amount_paise, currency: d.currency, order_id: d.order_id,
+            name: "Image Analysis Studio", description: `${d.images} image analyses`,
+            prefill: { email: d.user_email || "" },
+            theme: { color: "#4f7cff" },
+            handler: async (resp) => {
+              status("Verifying payment…");
+              const vr = await fetch("/api/payments/verify", { method: "POST", headers: hdrs(), body: JSON.stringify({
+                order_id: resp.razorpay_order_id, payment_id: resp.razorpay_payment_id, signature: resp.razorpay_signature }) });
+              const vd = await vr.json().catch(() => ({}));
+              status(vr.ok ? `Payment received — ${vd.remaining} analyses available.` : (vd.error || "Verification failed — contact support."));
+            },
+            modal: { ondismiss: () => status("Payment cancelled.") },
+          });
+          rz.open();
+        } catch { status("Something went wrong — try again."); }
+      });
+    </script>
 
     <div class="note" id="pricingNote">
       <strong>After your first 5 free analyses</strong>, each additional image costs
