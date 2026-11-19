@@ -2042,7 +2042,7 @@ def _user_pricing(tz=None):
     return {
         "currency": "USD",
         "price_per_image": _PRICE_PER_IMAGE_USD,
-        "price_label": f"${_PRICE_PER_IMAGE_USD:g}/image",
+        "price_label": f"${_PRICE_PER_IMAGE_USD:.2f}/image",
     }
 
 
