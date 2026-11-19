@@ -17,3 +17,4 @@ chrome_extension_latest/icons/*.jpg
 
 mobile_app/.expo/
 mobile_app/node_modules/
+.env

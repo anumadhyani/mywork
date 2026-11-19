@@ -98,6 +98,7 @@
             },
             modal: { ondismiss: () => status("Payment cancelled.") },
           });
+          rz.on("payment.failed", () => status("Payment failed — try again."));
           rz.open();
         } catch { status("Something went wrong — try again."); }
       });

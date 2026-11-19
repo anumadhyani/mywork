@@ -1,4 +1,22 @@
 import os
+
+
+def _load_dotenv(path=".env"):
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
 import hashlib
 import hmac
 import ipaddress
