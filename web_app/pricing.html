@@ -46,7 +46,7 @@
 
       <div class="card featured">
         <h2>Pay per image</h2>
-        <div class="price">₹10 <small>/ image</small></div>
+        <div class="price"><span id="priceAmount">₹10</span> <small>/ image</small></div>
         <ul>
           <li>Everything in Free, with no image limit</li>
           <li>Pay only for what you analyze</li>
@@ -56,12 +56,28 @@
       </div>
     </div>
 
-    <div class="note">
-      <strong>After your first 5 free analyses</strong>, each additional image costs ₹10.
+    <div class="note" id="pricingNote">
+      <strong>After your first 5 free analyses</strong>, each additional image costs
+      <span id="priceNote">₹10</span>.
       Payment checkout is coming soon — until then, if you have an API key you can
       sign in with it on the app to continue analyzing without the free-tier limit.
       For bulk or enterprise plans, contact your administrator.
     </div>
+    <script>
+      (async () => {
+        try {
+          const r = await fetch("/public/pricing");
+          if (!r.ok) return;
+          const d = await r.json();
+          if (!d || !d.price_label) return;
+          const unit = d.price_label.replace("/image", "");
+          const amt = document.getElementById("priceAmount");
+          const note = document.getElementById("priceNote");
+          if (amt) amt.textContent = unit;
+          if (note) note.textContent = unit;
+        } catch {}
+      })();
+    </script>
   </div>
 </body>
 </html>

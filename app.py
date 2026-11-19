@@ -2016,7 +2016,23 @@ def public_c2pa():
 
 
 _FREE_ANALYSIS_LIMIT = int(os.getenv("FREE_ANALYSIS_LIMIT", "5"))
-_PRICE_PER_IMAGE_INR = int(os.getenv("PRICE_PER_IMAGE_INR", "10"))
+_PRICE_PER_IMAGE_INR = float(os.getenv("PRICE_PER_IMAGE_INR", "10"))
+_PRICE_PER_IMAGE_USD = float(os.getenv("PRICE_PER_IMAGE_USD", "0.50"))
+
+
+def _user_pricing():
+    country = ((_geo_lookup(_get_client_ip()) or {}).get("country") or "").strip().lower()
+    if country in ("india", "in"):
+        return {
+            "currency": "INR",
+            "price_per_image": _PRICE_PER_IMAGE_INR,
+            "price_label": f"₹{_PRICE_PER_IMAGE_INR:g}/image",
+        }
+    return {
+        "currency": "USD",
+        "price_per_image": _PRICE_PER_IMAGE_USD,
+        "price_label": f"${_PRICE_PER_IMAGE_USD:g}/image",
+    }
 
 
 def _ensure_usage_schema():
@@ -2148,8 +2164,8 @@ def _free_quota_gate():
         "error": "free_quota_exhausted",
         "used": used,
         "free_limit": _FREE_ANALYSIS_LIMIT,
-        "price_per_image_inr": _PRICE_PER_IMAGE_INR,
         "pricing_url": "/pricing",
+        **_user_pricing(),
     }), 402
 
 
@@ -2165,8 +2181,13 @@ def api_usage():
         "plan": "free" if used is None or used < _FREE_ANALYSIS_LIMIT else "quota_exhausted",
         "free_limit": _FREE_ANALYSIS_LIMIT,
         "used": used,
-        "price_per_image_inr": _PRICE_PER_IMAGE_INR,
+        **_user_pricing(),
     })
+
+
+@app.get("/public/pricing")
+def public_pricing():
+    return jsonify({"free_limit": _FREE_ANALYSIS_LIMIT, **_user_pricing()})
 
 
 @app.post("/api/ai-detect")

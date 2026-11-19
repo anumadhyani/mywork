@@ -746,7 +746,7 @@ async function analyzeItem(item, includeC2pa) {
     if (aiResp.status === 402) {
       const data = await aiResp.json().catch(() => ({}));
       item.quotaExceeded = true;
-      throw new Error(`Free limit reached — ${data.free_limit || 5} image analyses used. \u20B9${data.price_per_image_inr || 10}/image after.`);
+      throw new Error(`Free limit reached — ${data.free_limit || 5} image analyses used. ${data.price_label || "Paid per image"} after.`);
     }
     item.result = await parseApiResponse(aiResp);
 
@@ -785,7 +785,7 @@ async function refreshUsage() {
     const left = Math.max(0, (u.free_limit || 5) - u.used);
     els.usageText.innerHTML = left > 0
       ? `Free analyses left: ${left} of ${u.free_limit} · <a href="/pricing">Pricing</a>`
-      : `Free analyses used (${u.used}/${u.free_limit}) · <a href="/pricing">View pricing</a>`;
+      : `Free analyses used (${u.used}/${u.free_limit}) · ${u.price_label || ""} · <a href="/pricing">View pricing</a>`;
   } catch {
     els.usageText.textContent = "";
   }
