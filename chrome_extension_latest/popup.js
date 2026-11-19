@@ -378,7 +378,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
       if (!response.ok) {
         // Handle HTTP errors (e.g., 400, 500)
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
+        if (response.status === 402 || errorData.error === 'free_quota_exhausted') {
+          const price = errorData.price_label || 'a small fee';
+          throw new Error(`Free limit reached (${errorData.free_limit || 5} analyses). ${price} after — see ${FLASK_BACKEND_URL}/pricing`);
+        }
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
