@@ -371,6 +371,17 @@ main {
   padding: 5px 7px;
 }
 
+.cta-link {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.cta-link:hover {
+  text-decoration: underline;
+}
+
 .history-filters {
   align-items: center;
   display: flex;

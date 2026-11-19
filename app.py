@@ -1693,6 +1693,13 @@ def web_app_asset(filename: str):
     return response
 
 
+@app.get("/history")
+def history_page():
+    response = send_from_directory(_WEB_APP_DIR, "history.html", max_age=0)
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 @app.get("/pricing")
 def pricing_page():
     response = send_from_directory(_WEB_APP_DIR, "pricing.html", max_age=0)

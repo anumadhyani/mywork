@@ -466,6 +466,7 @@ function mergeHistoryRows(rows) {
 }
 
 function renderHistory() {
+  if (!els.historyStatus || !els.historyList) return;
   if (!signedIn()) {
     els.historyStatus.textContent = "Sign in to load your analysis history.";
     els.historyList.innerHTML = "";
@@ -498,6 +499,7 @@ function renderHistory() {
 }
 
 async function loadHistory() {
+  if (!els.historyStatus) return;
   if (!signedIn()) {
     state.history = [];
     state.historyError = "";
@@ -880,7 +882,7 @@ function bindEvents() {
 
   els.analyzeButton.addEventListener("click", analyzeQueue);
   els.clearButton.addEventListener("click", clearItems);
-  els.refreshHistoryButton.addEventListener("click", loadHistory);
+  els.refreshHistoryButton?.addEventListener("click", loadHistory);
   els.applyHistoryFilter?.addEventListener("click", loadHistory);
   els.apiKeyButton.addEventListener("click", () => {
     const key = els.apiKeyInput.value.trim();
