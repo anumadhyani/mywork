@@ -1691,6 +1691,13 @@ def web_app_asset(filename: str):
     return response
 
 
+@app.get("/pricing")
+def pricing_page():
+    response = send_from_directory(_WEB_APP_DIR, "pricing.html", max_age=0)
+    response.headers["Cache-Control"] = "no-store, must-revalidate"
+    return response
+
+
 @app.get("/web-config")
 def web_config():
     return jsonify({"google_client_id": _WEB_GOOGLE_CLIENT_ID})
@@ -2006,10 +2013,71 @@ def public_c2pa():
     return _handle_c2pa_request()
 
 
+_FREE_ANALYSIS_LIMIT = int(os.getenv("FREE_ANALYSIS_LIMIT", "5"))
+_PRICE_PER_IMAGE_INR = int(os.getenv("PRICE_PER_IMAGE_INR", "10"))
+
+
+def _count_user_analyses(user_sub):
+    ph = "%s" if _DATABASE_URL else "?"
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        cur = conn.cursor() if _DATABASE_URL else conn
+        cur.execute(
+            f"SELECT COUNT(*) FROM analysis_results "
+            f"WHERE user_sub={ph} AND analysis_type='ai_detect' AND status='success'",
+            (user_sub,),
+        )
+        return int((cur.fetchone() or [0])[0])
+    finally:
+        conn.close()
+
+
+def _free_quota_gate():
+    """402 response when a signed-in user has exhausted the free tier.
+    API-key plans are unaffected (they already carry plan limits)."""
+    if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
+        return None
+    try:
+        _ensure_analytics_schema()
+        used = _count_user_analyses(g.user_sub)
+    except Exception as e:
+        logging.warning("quota_count_failed %s: %s", type(e).__name__, e)
+        return None
+    if used < _FREE_ANALYSIS_LIMIT:
+        return None
+    return jsonify({
+        "error": "free_quota_exhausted",
+        "used": used,
+        "free_limit": _FREE_ANALYSIS_LIMIT,
+        "price_per_image_inr": _PRICE_PER_IMAGE_INR,
+        "pricing_url": "/pricing",
+    }), 402
+
+
+@app.get("/api/usage")
+def api_usage():
+    if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
+        return jsonify({"plan": "api_key", "free_limit": None, "used": None})
+    try:
+        _ensure_analytics_schema()
+        used = _count_user_analyses(g.user_sub)
+    except Exception:
+        used = None
+    return jsonify({
+        "plan": "free" if used is None or used < _FREE_ANALYSIS_LIMIT else "quota_exhausted",
+        "free_limit": _FREE_ANALYSIS_LIMIT,
+        "used": used,
+        "price_per_image_inr": _PRICE_PER_IMAGE_INR,
+    })
+
+
 @app.post("/api/ai-detect")
 @limiter.limit(_API_IP_SAFETY_LIMIT, key_func=get_remote_address)
 @limiter.limit(_plan_limit_string, key_func=_plan_limit_key)
 def api_ai_detect():
+    gate = _free_quota_gate()
+    if gate is not None:
+        return gate
     if "file" not in request.files:
         return jsonify({"error": "No file part", "status": "failure"}), 400
 

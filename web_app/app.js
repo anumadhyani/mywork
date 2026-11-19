@@ -38,6 +38,7 @@ const els = {
   queueCount: $("queueCount"),
   completedCount: $("completedCount"),
   statusMessage: $("statusMessage"),
+  usageText: $("usageText"),
   totalCount: $("totalCount"),
   syntheticCount: $("syntheticCount"),
   dubiousCount: $("dubiousCount"),
@@ -135,6 +136,7 @@ function setSession(jwt, payload) {
   renderAuth();
   render();
   loadHistory();
+  refreshUsage();
 }
 
 function setApiKeySession(key) {
@@ -148,6 +150,7 @@ function setApiKeySession(key) {
   renderAuth();
   render();
   loadHistory();
+  refreshUsage();
 }
 
 function signOut() {
@@ -579,7 +582,7 @@ function renderCard(item) {
         ` : ""}
 
         ${item.status === "queued" ? `<div class="result-badge neutral">Ready for analysis</div>` : ""}
-        ${item.status === "error" ? `<div class="error-text">${escapeHtml(item.error || "Analysis failed")}</div>` : ""}
+        ${item.status === "error" ? `<div class="error-text">${escapeHtml(item.error || "Analysis failed")}${item.quotaExceeded ? ` <a href="/pricing">View pricing</a>` : ""}</div>` : ""}
       </div>
     </article>
   `;
@@ -727,11 +730,17 @@ async function analyzeItem(item, includeC2pa) {
   try {
     const aiForm = new FormData();
     aiForm.append("file", item.file, item.name);
-    item.result = await parseApiResponse(await fetch(`${API_BASE}/api/ai-detect`, {
+    const aiResp = await fetch(`${API_BASE}/api/ai-detect`, {
       method: "POST",
       headers: authHeaders(),
       body: aiForm,
-    }));
+    });
+    if (aiResp.status === 402) {
+      const data = await aiResp.json().catch(() => ({}));
+      item.quotaExceeded = true;
+      throw new Error(`Free limit reached — ${data.free_limit || 5} image analyses used. \u20B9${data.price_per_image_inr || 10}/image after.`);
+    }
+    item.result = await parseApiResponse(aiResp);
 
     if (includeC2pa) {
       try {
@@ -753,6 +762,24 @@ async function analyzeItem(item, includeC2pa) {
     item.error = error.message || "Analysis failed";
   } finally {
     render();
+    refreshUsage();
+  }
+}
+
+async function refreshUsage() {
+  if (!els.usageText) return;
+  try {
+    const u = await parseApiResponse(await fetch(`${API_BASE}/api/usage`, { headers: authHeaders() }));
+    if (u.used === null || u.used === undefined) {
+      els.usageText.textContent = "";
+      return;
+    }
+    const left = Math.max(0, (u.free_limit || 5) - u.used);
+    els.usageText.innerHTML = left > 0
+      ? `Free analyses left: ${left} of ${u.free_limit} · <a href="/pricing">Pricing</a>`
+      : `Free analyses used (${u.used}/${u.free_limit}) · <a href="/pricing">View pricing</a>`;
+  } catch {
+    els.usageText.textContent = "";
   }
 }
 

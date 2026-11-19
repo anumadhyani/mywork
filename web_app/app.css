@@ -665,6 +665,27 @@ main {
   font-weight: 600;
 }
 
+.nav-link {
+  color: var(--accent, #4f7cff);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.nav-link:hover {
+  text-decoration: underline;
+}
+
+.usage-text {
+  color: var(--muted, #64748b);
+  font-size: 13px;
+}
+
+.usage-text a {
+  color: var(--accent, #4f7cff);
+}
+
 .card-body {
   display: flex;
   flex: 1;
