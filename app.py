@@ -1357,10 +1357,16 @@ def _ensure_auth_schema():
         conn.close()
 
 
+def _html_escape(value):
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
 @app.get("/admin/dashboard")
 def admin_dashboard():
     _ensure_auth_schema()
     _ensure_analytics_schema()
+    _ensure_usage_schema()
+    _ensure_payments_schema()
     if _DATABASE_URL:
         conn = _pg_conn()
         try:
@@ -1369,6 +1375,10 @@ def admin_dashboard():
             total_requests = cur.fetchone()[0]
             cur.execute("SELECT COUNT(DISTINCT ip) FROM api_requests WHERE ip IS NOT NULL AND ip != ''")
             total_users = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM user_usage WHERE credits_paid > 0")
+            paid_users = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM user_usage")
+            signed_in_users = cur.fetchone()[0]
             cur.execute(
                 """
                 SELECT COALESCE(country, 'Unknown') AS country, COUNT(*) AS c
@@ -1401,6 +1411,61 @@ def admin_dashboard():
                 }
                 for r in cur.fetchall()
             ]
+            cur.execute(
+                """
+                SELECT u.user_email, u.user_name, u.last_ts, u.analyses_used, u.credits_paid,
+                       (SELECT ar.country FROM analysis_results ar
+                        WHERE ar.user_sub = u.user_sub AND ar.country IS NOT NULL AND ar.country != ''
+                        ORDER BY ar.ts_utc DESC LIMIT 1) AS country
+                FROM user_usage u
+                ORDER BY u.last_ts DESC
+                LIMIT 200
+                """
+            )
+            users_list = [
+                {
+                    "email": r[0], "name": r[1], "last_ts": r[2],
+                    "used": r[3], "credits": r[4], "country": r[5] or "—",
+                }
+                for r in cur.fetchall()
+            ]
+            cur.execute(
+                """
+                SELECT analysis_type, COUNT(*) AS c
+                FROM analysis_results
+                GROUP BY analysis_type
+                ORDER BY c DESC
+                """
+            )
+            features = [{"feature": r[0], "c": r[1]} for r in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT channel, COUNT(*) AS c
+                FROM analysis_results
+                GROUP BY channel
+                ORDER BY c DESC
+                """
+            )
+            channels = [{"channel": r[0], "c": r[1]} for r in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT ts_utc, COALESCE(user_email, ip, 'anonymous') AS who, analysis_type,
+                       channel, COALESCE(error, 'unknown error') AS error
+                FROM analysis_results
+                WHERE status = 'failure'
+                ORDER BY ts_utc DESC
+                LIMIT 100
+                """
+            )
+            errors = [
+                {
+                    "ts_utc": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                    "who": r[1], "type": r[2], "channel": r[3], "error": r[4],
+                }
+                for r in cur.fetchall()
+            ]
+            cur.execute("SELECT COUNT(*) FROM analysis_results WHERE status = 'failure'")
+            total_errors = cur.fetchone()[0]
         finally:
             conn.close()
     else:
@@ -1410,6 +1475,8 @@ def admin_dashboard():
             total_users = conn.execute(
                 "SELECT COUNT(DISTINCT ip) AS c FROM api_requests WHERE ip IS NOT NULL AND ip != ''"
             ).fetchone()["c"]
+            paid_users = conn.execute("SELECT COUNT(*) AS c FROM user_usage WHERE credits_paid > 0").fetchone()["c"]
+            signed_in_users = conn.execute("SELECT COUNT(*) AS c FROM user_usage").fetchone()["c"]
             by_country = conn.execute(
                 """
                 SELECT COALESCE(country, 'Unknown') AS country, COUNT(*) AS c
@@ -1427,6 +1494,46 @@ def admin_dashboard():
                 LIMIT 100
                 """
             ).fetchall()
+            users_list = conn.execute(
+                """
+                SELECT u.user_email AS email, u.user_name AS name, u.last_ts,
+                       u.analyses_used AS used, u.credits_paid AS credits,
+                       COALESCE((SELECT ar.country FROM analysis_results ar
+                        WHERE ar.user_sub = u.user_sub AND ar.country IS NOT NULL AND ar.country != ''
+                        ORDER BY ar.ts_utc DESC LIMIT 1), '—') AS country
+                FROM user_usage u
+                ORDER BY u.last_ts DESC
+                LIMIT 200
+                """
+            ).fetchall()
+            features = conn.execute(
+                """
+                SELECT analysis_type AS feature, COUNT(*) AS c
+                FROM analysis_results
+                GROUP BY analysis_type
+                ORDER BY c DESC
+                """
+            ).fetchall()
+            channels = conn.execute(
+                """
+                SELECT channel, COUNT(*) AS c
+                FROM analysis_results
+                GROUP BY channel
+                ORDER BY c DESC
+                """
+            ).fetchall()
+            errors = conn.execute(
+                """
+                SELECT ts_utc, COALESCE(user_email, ip, 'anonymous') AS who,
+                       analysis_type AS type, channel,
+                       COALESCE(error, 'unknown error') AS error
+                FROM analysis_results
+                WHERE status = 'failure'
+                ORDER BY ts_utc DESC
+                LIMIT 100
+                """
+            ).fetchall()
+            total_errors = conn.execute("SELECT COUNT(*) AS c FROM analysis_results WHERE status = 'failure'").fetchone()["c"]
         finally:
             conn.close()
 
@@ -1452,6 +1559,44 @@ def admin_dashboard():
             for r in recent
         ]
     )
+    esc = _html_escape
+    user_rows = "".join(
+        [
+            "<tr>"
+            f"<td>{esc(_get(r, 'name') or '')}</td>"
+            f"<td>{esc(_get(r, 'email') or '')}</td>"
+            f"<td>{esc(_get(r, 'country') or '')}</td>"
+            f"<td>{esc(_get(r, 'last_ts') or '')}</td>"
+            f"<td style='text-align:right'>{_get(r, 'used') or 0}</td>"
+            f"<td style='text-align:right'>{_get(r, 'credits') or 0}</td>"
+            "</tr>"
+            for r in users_list
+        ]
+    ) or "<tr><td colspan='6' class='muted'>No signed-in users yet</td></tr>"
+    feature_rows = "".join(
+        [
+            f"<tr><td>{esc(_get(r, 'feature') or '')}</td><td style='text-align:right'>{_get(r, 'c')}</td></tr>"
+            for r in features
+        ]
+    ) or "<tr><td colspan='2' class='muted'>No analyses yet</td></tr>"
+    channel_rows = "".join(
+        [
+            f"<tr><td>{esc(_get(r, 'channel') or '')}</td><td style='text-align:right'>{_get(r, 'c')}</td></tr>"
+            for r in channels
+        ]
+    ) or "<tr><td colspan='2' class='muted'>No analyses yet</td></tr>"
+    error_rows = "".join(
+        [
+            "<tr>"
+            f"<td>{esc(_get(r, 'ts_utc') or '')}</td>"
+            f"<td>{esc(_get(r, 'who') or '')}</td>"
+            f"<td>{esc(_get(r, 'type') or '')}</td>"
+            f"<td>{esc(_get(r, 'channel') or '')}</td>"
+            f"<td>{esc(_get(r, 'error') or '')}</td>"
+            "</tr>"
+            for r in errors
+        ]
+    ) or "<tr><td colspan='5' class='muted'>No errors recorded</td></tr>"
 
     html = f"""<!doctype html>
 <html lang=\"en\">
@@ -1479,6 +1624,46 @@ def admin_dashboard():
     <div class=\"kpis\">
       <div class=\"card\"><div class=\"label\">Total requests</div><div class=\"value\">{total_requests}</div></div>
       <div class=\"card\"><div class=\"label\">Total users (unique IPs)</div><div class=\"value\">{total_users}</div></div>
+      <div class=\"card\"><div class=\"label\">Signed-in users</div><div class=\"value\">{signed_in_users}</div></div>
+      <div class=\"card\"><div class=\"label\">Paid users</div><div class=\"value\">{paid_users}</div></div>
+      <div class=\"card\"><div class=\"label\">Failed analyses</div><div class=\"value\">{total_errors}</div></div>
+    </div>
+
+    <div class=\"card\" style=\"margin-bottom:12px\">
+      <h2>Users</h2>
+      <table>
+        <thead><tr><th>Name</th><th>Email</th><th>Country</th><th>Last active (UTC)</th><th style=\"text-align:right\">Analyses</th><th style=\"text-align:right\">Paid credits</th></tr></thead>
+        <tbody>
+          {user_rows}
+        </tbody>
+      </table>
+    </div>
+
+    <div class=\"kpis\" style=\"grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin-bottom: 12px\">
+      <div class=\"card\">
+        <h2>Most used features</h2>
+        <table>
+          <thead><tr><th>Feature</th><th style=\"text-align:right\">Uses</th></tr></thead>
+          <tbody>{feature_rows}</tbody>
+        </table>
+      </div>
+      <div class=\"card\">
+        <h2>Usage by channel</h2>
+        <table>
+          <thead><tr><th>Channel</th><th style=\"text-align:right\">Uses</th></tr></thead>
+          <tbody>{channel_rows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class=\"card\" style=\"margin-bottom:12px\">
+      <h2>Recent errors (last 100)</h2>
+      <table>
+        <thead><tr><th>Time (UTC)</th><th>User</th><th>Type</th><th>Channel</th><th>Error</th></tr></thead>
+        <tbody>
+          {error_rows}
+        </tbody>
+      </table>
     </div>
 
     <div class=\"card\">
