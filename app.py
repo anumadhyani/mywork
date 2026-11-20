@@ -417,15 +417,18 @@ def _admin_guard():
     ip = _get_client_ip()
     if not _admin_allowlisted(ip):
         _admin_audit("admin_denied_ip", {"ip": ip})
+        app.logger.warning("admin_denied_ip ip=%s", ip)
         return jsonify({"status": "failure", "error": "Unauthorized"}), 401
 
     token = os.getenv("ADMIN_TOKEN")
     if not (token or "").strip():
         _admin_audit("admin_denied_missing_token", {"ip": ip})
+        app.logger.warning("admin_denied_missing_token ip=%s", ip)
         return jsonify({"status": "failure", "error": "Unauthorized"}), 401
     supplied = request.headers.get("X-Admin-Token") or request.args.get("token")
     if token and supplied != token:
         _admin_audit("admin_denied_token", {"ip": ip})
+        app.logger.warning("admin_denied_token ip=%s", ip)
         return jsonify({"status": "failure", "error": "Unauthorized"}), 401
 
     return None
