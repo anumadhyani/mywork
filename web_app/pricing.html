@@ -88,6 +88,7 @@
             key: d.key_id, amount: d.amount_paise, currency: d.currency, order_id: d.order_id,
             name: "Image Analysis Studio", description: `${d.images} image analyses`,
             prefill: { email: d.user_email || "" },
+            method: { upi: true, card: true, netbanking: true, wallet: true },
             theme: { color: "#4f7cff" },
             handler: async (resp) => {
               status("Verifying payment…");
