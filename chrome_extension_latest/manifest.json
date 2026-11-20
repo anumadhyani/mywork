@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Image Analysis Extension",
-  "version": "1.4.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp31FXXWT4JfkJTF4RMD/hHMvIMq0coO+OZx03O8asRYvl8PCo2/ISRUgKHtpQkucpmBvwXJWiwaUFozpxERmFB+BC9pmKuuqp9v2lBzC9o6H4mkVBABWKJzF6uxUOzSYCCiJb5dlEYt9riWRzgjHbLEfxIP8awHQDAeBQl200MuaKBDHUj8FTEsVKmULVr4xdrPHCVFLuQV7byRIDbQw4y0gbr/oW9SuxjFancOPGLyut972oI1v1NY0kn4+eJZ/Pl4nYVqcxpQueRUMkJgWmOhJvblTJLPnCQxlD6yo12kVIpQG8MFHGFfDB+QzXwItAsfaKMOj7ovQkb1fo+ziVQIDAQAB",
+  "version": "1.4.1",
   "description": "Analyze images for AI generation or forensic manipulation.",
   "action": {
     "default_popup": "popup.html",
