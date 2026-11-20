@@ -1370,6 +1370,8 @@ def admin_dashboard():
     _ensure_analytics_schema()
     _ensure_usage_schema()
     _ensure_payments_schema()
+    _ensure_feedback_schema()
+    _ensure_consent_schema()
     if _DATABASE_URL:
         conn = _pg_conn()
         try:
@@ -1380,7 +1382,19 @@ def admin_dashboard():
             total_users = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM user_usage WHERE credits_paid > 0")
             paid_users = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM user_usage")
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT user_sub FROM user_usage WHERE user_sub IS NOT NULL
+                    UNION
+                    SELECT user_sub FROM analysis_results WHERE user_sub IS NOT NULL
+                    UNION
+                    SELECT user_sub FROM feedback WHERE user_sub IS NOT NULL
+                    UNION
+                    SELECT user_sub FROM user_consent WHERE user_sub IS NOT NULL
+                ) t
+                """
+            )
             signed_in_users = cur.fetchone()[0]
             cur.execute(
                 """
@@ -1416,12 +1430,27 @@ def admin_dashboard():
             ]
             cur.execute(
                 """
-                SELECT u.user_email, u.user_name, u.last_ts, u.analyses_used, u.credits_paid,
+                SELECT MAX(u.email) AS email, MAX(u.name) AS name, MAX(u.last_ts) AS last_ts,
+                       MAX(u.used) AS used, MAX(u.credits) AS credits,
                        (SELECT ar.country FROM analysis_results ar
                         WHERE ar.user_sub = u.user_sub AND ar.country IS NOT NULL AND ar.country != ''
                         ORDER BY ar.ts_utc DESC LIMIT 1) AS country
-                FROM user_usage u
-                ORDER BY u.last_ts DESC
+                FROM (
+                    SELECT user_sub, user_email AS email, user_name AS name,
+                           last_ts, analyses_used AS used, credits_paid AS credits
+                    FROM user_usage
+                    UNION ALL
+                    SELECT user_sub, user_email, user_name, ts_utc, 0, 0
+                    FROM analysis_results WHERE user_sub IS NOT NULL
+                    UNION ALL
+                    SELECT user_sub, user_email, NULL, ts_utc, 0, 0
+                    FROM feedback WHERE user_sub IS NOT NULL
+                    UNION ALL
+                    SELECT user_sub, user_email, NULL, ts_utc, 0, 0
+                    FROM user_consent WHERE user_sub IS NOT NULL
+                ) u
+                GROUP BY u.user_sub
+                ORDER BY last_ts DESC
                 LIMIT 200
                 """
             )
@@ -1479,7 +1508,19 @@ def admin_dashboard():
                 "SELECT COUNT(DISTINCT ip) AS c FROM api_requests WHERE ip IS NOT NULL AND ip != ''"
             ).fetchone()["c"]
             paid_users = conn.execute("SELECT COUNT(*) AS c FROM user_usage WHERE credits_paid > 0").fetchone()["c"]
-            signed_in_users = conn.execute("SELECT COUNT(*) AS c FROM user_usage").fetchone()["c"]
+            signed_in_users = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM (
+                    SELECT user_sub FROM user_usage WHERE user_sub IS NOT NULL
+                    UNION
+                    SELECT user_sub FROM analysis_results WHERE user_sub IS NOT NULL
+                    UNION
+                    SELECT user_sub FROM feedback WHERE user_sub IS NOT NULL
+                    UNION
+                    SELECT user_sub FROM user_consent WHERE user_sub IS NOT NULL
+                ) t
+                """
+            ).fetchone()["c"]
             by_country = conn.execute(
                 """
                 SELECT COALESCE(country, 'Unknown') AS country, COUNT(*) AS c
@@ -1499,13 +1540,27 @@ def admin_dashboard():
             ).fetchall()
             users_list = conn.execute(
                 """
-                SELECT u.user_email AS email, u.user_name AS name, u.last_ts,
-                       u.analyses_used AS used, u.credits_paid AS credits,
+                SELECT MAX(u.email) AS email, MAX(u.name) AS name, MAX(u.last_ts) AS last_ts,
+                       MAX(u.used) AS used, MAX(u.credits) AS credits,
                        COALESCE((SELECT ar.country FROM analysis_results ar
                         WHERE ar.user_sub = u.user_sub AND ar.country IS NOT NULL AND ar.country != ''
                         ORDER BY ar.ts_utc DESC LIMIT 1), '—') AS country
-                FROM user_usage u
-                ORDER BY u.last_ts DESC
+                FROM (
+                    SELECT user_sub, user_email AS email, user_name AS name,
+                           last_ts, analyses_used AS used, credits_paid AS credits
+                    FROM user_usage
+                    UNION ALL
+                    SELECT user_sub, user_email, user_name, ts_utc, 0, 0
+                    FROM analysis_results WHERE user_sub IS NOT NULL
+                    UNION ALL
+                    SELECT user_sub, user_email, NULL, ts_utc, 0, 0
+                    FROM feedback WHERE user_sub IS NOT NULL
+                    UNION ALL
+                    SELECT user_sub, user_email, NULL, ts_utc, 0, 0
+                    FROM user_consent WHERE user_sub IS NOT NULL
+                ) u
+                GROUP BY u.user_sub
+                ORDER BY last_ts DESC
                 LIMIT 200
                 """
             ).fetchall()
