@@ -1964,6 +1964,9 @@ def privacy_policy():
       <li>Analysis metadata (analysis type, result band, provenance source, client channel, file type/size, image hash)</li>
       <li>Signed-in account identifier, email, and name, when a user signs in with Google</li>
       <li>Approximate location derived from IP (country/region/city), when available</li>
+      <li>User-submitted feedback text you send through result cards</li>
+      <li>Usage and billing counters (analyses used, credits purchased)</li>
+      <li>Your email-contact preference for product feedback, if you sign in</li>
     </ul>
 
     <h2>Why we collect it</h2>
@@ -1971,11 +1974,23 @@ def privacy_policy():
       <li>Rate limiting</li>
       <li>Abuse prevention</li>
       <li>Usage analytics (e.g., total usage and usage by geography)</li>
+      <li>Free-tier and paid-credit accounting</li>
+      <li>Product feedback — with your consent only</li>
     </ul>
+
+    <h2>Email contact consent</h2>
+    <p>
+      When you sign in with Google, we may ask whether you allow us to contact your email address <strong>only</strong> for product feedback about this app. We never use your email for marketing. You can decline — the app works identically either way. We re-ask if your last answer is older than <strong>365 days</strong>.
+    </p>
+
+    <h2>Payments</h2>
+    <p>
+      Purchases are processed by Razorpay. We store your order ID, payment ID, amount, and image count to credit your account; card/UPI/bank details are handled entirely by Razorpay and never reach our servers.
+    </p>
 
     <h2>Data retention</h2>
     <p>
-      We retain anonymous analytics data for up to <strong>30 days</strong>. Signed-in and API-key analysis history is retained for up to <strong>365 days</strong> so users can view their dashboard on return visits.
+      We retain anonymous analytics data for up to <strong>30 days</strong>. Signed-in and API-key analysis history is retained for up to <strong>365 days</strong> so users can view their dashboard on return visits. Billing usage counters and payment records are kept for accounting purposes.
     </p>
 
     <h2>Contact</h2>
@@ -2394,6 +2409,100 @@ def payments_webhook():
             except Exception:
                 logging.warning("webhook_credit_failed", exc_info=True)
     return jsonify({"status": "ok"})
+
+
+_CONSENT_VALID_DAYS = int(os.getenv("CONSENT_VALID_DAYS", "365"))
+
+
+def _ensure_consent_schema():
+    ddl_pg = """
+        CREATE TABLE IF NOT EXISTS user_consent (
+          user_sub TEXT PRIMARY KEY,
+          user_email TEXT,
+          consent BOOLEAN NOT NULL,
+          ts_utc TIMESTAMPTZ NOT NULL
+        )
+        """
+    ddl_lite = """
+        CREATE TABLE IF NOT EXISTS user_consent (
+          user_sub TEXT PRIMARY KEY,
+          user_email TEXT,
+          consent INTEGER NOT NULL,
+          ts_utc TEXT NOT NULL
+        )
+        """
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        (conn.cursor() if _DATABASE_URL else conn).execute(ddl_pg if _DATABASE_URL else ddl_lite)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _consent_record(user_sub):
+    _ensure_consent_schema()
+    ph = "%s" if _DATABASE_URL else "?"
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        cur = conn.cursor() if _DATABASE_URL else conn
+        cur.execute(f"SELECT consent, ts_utc FROM user_consent WHERE user_sub={ph}", (user_sub,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        ts = row[1]
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return {"consent": bool(row[0]), "ts_utc": ts}
+    finally:
+        conn.close()
+
+
+@app.get("/api/consent")
+def get_consent():
+    if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
+        return jsonify({"needs_consent": False})
+    try:
+        rec = _consent_record(g.user_sub)
+    except Exception as e:
+        logging.warning("consent_read_failed %s: %s", type(e).__name__, e)
+        return jsonify({"needs_consent": True, "consent": None})
+    stale = rec is None or (
+        datetime.now(timezone.utc) - rec["ts_utc"] > timedelta(days=_CONSENT_VALID_DAYS)
+    )
+    return jsonify({"needs_consent": stale, "consent": rec["consent"] if rec else None})
+
+
+@app.post("/api/consent")
+def post_consent():
+    user_sub = getattr(g, "user_sub", None)
+    if not user_sub:
+        return jsonify({"error": "sign_in_required"}), 401
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data.get("consent"), bool):
+        return jsonify({"error": "consent must be true or false"}), 400
+    consent = bool(data["consent"])
+    _ensure_consent_schema()
+    now = datetime.now(timezone.utc)
+    ph = "%s" if _DATABASE_URL else "?"
+    conn = _pg_conn() if _DATABASE_URL else _sqlite_conn()
+    try:
+        cur = conn.cursor() if _DATABASE_URL else conn
+        cur.execute(
+            f"INSERT INTO user_consent (user_sub, user_email, consent, ts_utc) "
+            f"VALUES ({ph},{ph},{ph},{ph}) "
+            f"ON CONFLICT (user_sub) DO UPDATE SET consent={'EXCLUDED' if _DATABASE_URL else 'excluded'}.consent, "
+            f"user_email={'EXCLUDED' if _DATABASE_URL else 'excluded'}.user_email, "
+            f"ts_utc={'EXCLUDED' if _DATABASE_URL else 'excluded'}.ts_utc",
+            (user_sub, getattr(g, "user_email", None),
+             consent if _DATABASE_URL else int(consent),
+             now if _DATABASE_URL else now.isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"status": "ok", "consent": consent})
 
 
 @app.get("/public/pricing")

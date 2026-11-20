@@ -39,6 +39,9 @@ const els = {
   completedCount: $("completedCount"),
   statusMessage: $("statusMessage"),
   usageText: $("usageText"),
+  consentModal: $("consentModal"),
+  consentYes: $("consentYes"),
+  consentNo: $("consentNo"),
   totalCount: $("totalCount"),
   syntheticCount: $("syntheticCount"),
   dubiousCount: $("dubiousCount"),
@@ -140,6 +143,7 @@ function setSession(jwt, payload) {
   render();
   loadHistory();
   refreshUsage();
+  checkConsent();
 }
 
 function setApiKeySession(key) {
@@ -776,6 +780,26 @@ async function analyzeItem(item, includeC2pa) {
   }
 }
 
+async function checkConsent() {
+  if (!els.consentModal || !state.jwt) return;
+  try {
+    const resp = await fetch(`${API_BASE}/api/consent`, { headers: authHeaders() });
+    const data = await resp.json().catch(() => null);
+    if (resp.ok && data?.needs_consent) els.consentModal.classList.remove("hidden");
+  } catch {}
+}
+
+async function submitConsent(consent) {
+  try {
+    await fetch(`${API_BASE}/api/consent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ consent }),
+    });
+  } catch {}
+  els.consentModal?.classList.add("hidden");
+}
+
 async function refreshUsage() {
   if (!els.usageText) return;
   try {
@@ -885,6 +909,8 @@ function bindEvents() {
   els.clearButton.addEventListener("click", clearItems);
   els.refreshHistoryButton?.addEventListener("click", loadHistory);
   els.applyHistoryFilter?.addEventListener("click", loadHistory);
+  els.consentYes?.addEventListener("click", () => submitConsent(true));
+  els.consentNo?.addEventListener("click", () => submitConsent(false));
   els.apiKeyButton.addEventListener("click", () => {
     const key = els.apiKeyInput.value.trim();
     if (!key) {
