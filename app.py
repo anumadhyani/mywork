@@ -1943,7 +1943,7 @@ def privacy_policy():
   <head>
     <meta charset=\"utf-8\" />
     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>Privacy Policy</title>
+    <title>Privacy Policy — Truthlens</title>
     <style>
       body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; max-width: 900px; }
       h1 { margin: 0 0 8px 0; }
@@ -1951,9 +1951,13 @@ def privacy_policy():
       p, li { line-height: 1.5; }
       .muted { color: #6b7280; font-size: 12px; }
       code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; }
+      .brand { align-items: baseline; display: flex; gap: 8px; margin-bottom: 14px; }
+      .brand-name { color: #0b3d91; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+      .brand-sub { color: #6b7280; font-size: 12px; font-weight: 500; }
     </style>
   </head>
   <body>
+    <div class=\"brand\"><span class=\"brand-name\">Truthlens</span><span class=\"brand-sub\">by Trutyam</span></div>
     <h1>Privacy Policy</h1>
     <div class=\"muted\">Last updated: """ + datetime.now(timezone.utc).date().isoformat() + """</div>
 

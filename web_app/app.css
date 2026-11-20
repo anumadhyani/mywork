@@ -108,10 +108,25 @@ button.ghost:hover:not(:disabled) {
   backdrop-filter: blur(14px);
 }
 
-.topbar h1 {
-  font-size: 22px;
-  line-height: 1.1;
+.brand {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
   margin: 0 0 5px;
+}
+
+.brand-name {
+  color: #0b3d91;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.brand-sub {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .topbar p {

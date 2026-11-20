@@ -34,6 +34,24 @@ h2 {
   font-weight: 600;
 }
 
+h2.brand {
+  align-items: baseline;
+  display: flex;
+  gap: 6px;
+}
+
+.brand-name {
+  color: #0b3d91;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.brand-sub {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 500;
+}
+
 h3 {
   margin: 14px 0 8px 0;
   font-size: 14px;
