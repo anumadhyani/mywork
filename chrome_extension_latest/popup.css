@@ -174,3 +174,23 @@ button {
 .hidden {
   display: none !important;
 }
+
+.popup-footer {
+  border-top: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 16px;
+  padding-top: 10px;
+  text-align: center;
+}
+
+.popup-footer a {
+  color: #4f7cff;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.popup-footer a:hover {
+  text-decoration: underline;
+}

@@ -23,6 +23,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
   const FLASK_BACKEND_URL = 'https://mywork-production.up.railway.app';
 
+  const webAppLink = document.getElementById('webAppLink');
+  if (webAppLink) webAppLink.href = FLASK_BACKEND_URL;
+
   // --- Google Sign-In + first-party JWT handling ---
   function _showAuthError(message) {
     // Auth errors should be visible even when the signed-in view is hidden.
