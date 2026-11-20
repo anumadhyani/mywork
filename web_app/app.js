@@ -809,8 +809,10 @@ async function refreshUsage() {
       els.usageText.textContent = "";
       return;
     }
-    const left = u.remaining ?? Math.max(0, (u.free_limit || 5) - u.used);
-    els.usageText.innerHTML = left > 0
+    const left = u.plan === "unlimited" ? null : (u.remaining ?? Math.max(0, (u.free_limit || 5) - u.used));
+    els.usageText.innerHTML = left === null
+      ? `Unlimited analyses · <a href="/pricing">Pricing</a>`
+      : left > 0
       ? `Analyses left: ${left} (${u.free_limit} free${u.credits_paid ? ` + ${u.credits_paid} paid` : ""}) · <a href="/pricing">Pricing</a>`
       : `Limit reached (${u.used}/${u.allowance || u.free_limit}) · ${u.price_label || ""} · <a href="/pricing">Buy credits</a>`;
   } catch {
