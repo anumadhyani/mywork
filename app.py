@@ -2197,10 +2197,12 @@ def privacy_policy():
       .brand { align-items: baseline; display: flex; gap: 8px; margin-bottom: 14px; }
       .brand-name { color: #0b3d91; font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
       .brand-sub { color: #6b7280; font-size: 12px; font-weight: 500; }
+      .back { display: inline-block; margin-bottom: 14px; text-decoration: none; }
     </style>
   </head>
   <body>
     <div class=\"brand\"><span class=\"brand-name\">Truthlens</span><span class=\"brand-sub\">by Trutyam</span></div>
+    <a class=\"back\" href=\"/\">&larr; Back to Truthlens</a>
     <h1>Privacy Policy</h1>
     <div class=\"muted\">Last updated: """ + datetime.now(timezone.utc).date().isoformat() + """</div>
 

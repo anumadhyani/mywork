@@ -598,6 +598,16 @@ main {
   position: relative;
 }
 
+.thumb-missing {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  height: 100%;
+  justify-content: center;
+  width: 100%;
+}
+
 .thumb-wrap img {
   height: 100%;
   object-fit: contain;

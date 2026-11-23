@@ -2,6 +2,7 @@ const API_BASE = "";
 const JWT_STORAGE_KEY = "truthlens.web.jwt";
 const EMAIL_STORAGE_KEY = "truthlens.web.email";
 const API_KEY_SESSION_KEY = "truthlens.web.apiKey";
+const ITEMS_SESSION_KEY = "truthlens.web.items";
 const MAX_FILES = 50;
 const MAX_FILE_MB = 25;
 const MAX_CONCURRENT = 2;
@@ -171,6 +172,9 @@ function signOut() {
   localStorage.removeItem(JWT_STORAGE_KEY);
   localStorage.removeItem(EMAIL_STORAGE_KEY);
   sessionStorage.removeItem(API_KEY_SESSION_KEY);
+  sessionStorage.removeItem(ITEMS_SESSION_KEY);
+  state.items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+  state.items = [];
   state.history = [];
   state.historyLoading = false;
   state.historyError = "";
@@ -271,16 +275,22 @@ function addFiles(fileList) {
   });
 
   accepted.forEach((file) => {
-    state.items.push({
+    const item = {
       id: state.nextId++,
       file,
       name: file.name || "image",
       size: file.size,
       previewUrl: URL.createObjectURL(file),
+      thumb: "",
       status: "queued",
       result: null,
       c2pa: null,
       error: "",
+    };
+    state.items.push(item);
+    makeThumbnail(file).then((thumb) => {
+      item.thumb = thumb;
+      persistItems();
     });
   });
 
@@ -552,7 +562,7 @@ function renderCard(item) {
   return `
     <article class="result-card" data-id="${item.id}">
       <div class="thumb-wrap">
-        <img src="${item.previewUrl}" alt="${escapeHtml(item.name)}" loading="lazy" />
+        ${item.previewUrl ? `<img src="${item.previewUrl}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.style.visibility='hidden'" />` : `<div class="thumb-missing">No preview</div>`}
         <span class="status-badge ${item.status}">${statusLabel(item.status)}</span>
         ${canRemove ? `<button class="danger remove-card" data-remove="${item.id}" title="Remove image">×</button>` : ""}
         ${item.status === "done" && !item.feedbackSent ? `<button class="feedback-icon" data-feedback="${item.id}" title="Share feedback on this result" type="button"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg></button>` : ""}
@@ -580,8 +590,9 @@ function renderCard(item) {
             ${item.heatmap?.overlay_png_b64
               ? `<img class="heatmap-img" src="data:image/png;base64,${item.heatmap.overlay_png_b64}" alt="AI-signal heatmap" />
                  <div class="heatmap-note">${escapeHtml(item.heatmap.caveat || "Regions most influencing the AI score; not proof of edits.")}</div>`
-              : `<button class="secondary heatmap-btn" data-heatmap="${item.id}" type="button" ${item.heatmapLoading ? "disabled" : ""}>${item.heatmapLoading ? "Generating heatmap..." : "Show AI-signal heatmap"}</button>
-                 ${item.heatmap?.error ? `<div class="error-text">${escapeHtml(item.heatmap.error)}</div>` : ""}`}
+              : item.file ? `<button class="secondary heatmap-btn" data-heatmap="${item.id}" type="button" ${item.heatmapLoading ? "disabled" : ""}>${item.heatmapLoading ? "Generating heatmap..." : "Show AI-signal heatmap"}</button>
+                 ${item.heatmap?.error ? `<div class="error-text">${escapeHtml(item.heatmap.error)}</div>` : ""}`
+              : `<div class="heatmap-note">Re-add this image to generate a heatmap.</div>`}
           ` : ""}
           ${item.feedbackOpen && !item.feedbackSent ? `
             <div class="feedback-box">
@@ -633,10 +644,11 @@ function render() {
   renderSummary();
   els.emptyState.classList.toggle("hidden", state.items.length > 0);
   els.resultsGrid.innerHTML = state.items.map(renderCard).join("");
-  els.analyzeButton.disabled = !signedIn() || state.running || !state.items.some((item) => item.status === "queued" || item.status === "error");
+  els.analyzeButton.disabled = !signedIn() || state.running || !state.items.some((item) => item.file && (item.status === "queued" || item.status === "error"));
   els.clearButton.disabled = state.running || !state.items.length;
   els.includeC2pa.disabled = state.running;
   els.fileInput.disabled = state.running;
+  persistItems();
 
   els.resultsGrid.querySelectorAll("[data-remove]").forEach((button) => {
     button.addEventListener("click", () => removeItem(Number(button.dataset.remove)));
@@ -846,7 +858,7 @@ async function analyzeQueue() {
     return;
   }
 
-  const pending = state.items.filter((item) => item.status === "queued" || item.status === "error");
+  const pending = state.items.filter((item) => item.file && (item.status === "queued" || item.status === "error"));
   if (!pending.length) return;
 
   state.running = true;
@@ -927,6 +939,81 @@ function bindEvents() {
   });
 }
 
+function makeThumbnail(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const maxSide = 360;
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      try {
+        resolve(canvas.toDataURL("image/jpeg", 0.78));
+      } catch {
+        resolve("");
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve("");
+    };
+    img.src = url;
+  });
+}
+
+function persistItems() {
+  const slim = (withHeatmap) =>
+    state.items.map(({ id, name, size, status, result, c2pa, error, thumb, feedbackSent, quotaExceeded, heatmap }) => ({
+      id, name, size, status, result, c2pa, error, thumb, feedbackSent, quotaExceeded,
+      heatmap: withHeatmap ? heatmap : null,
+    }));
+  try {
+    sessionStorage.setItem(ITEMS_SESSION_KEY, JSON.stringify(slim(true)));
+  } catch {
+    try {
+      sessionStorage.setItem(ITEMS_SESSION_KEY, JSON.stringify(slim(false)));
+    } catch {}
+  }
+}
+
+function restoreItems() {
+  try {
+    const raw = sessionStorage.getItem(ITEMS_SESSION_KEY);
+    if (!raw) return;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return;
+    state.items = arr.map((it) => {
+      const item = {
+        id: it.id,
+        file: null,
+        name: it.name || "image",
+        size: it.size || 0,
+        thumb: it.thumb || "",
+        previewUrl: it.thumb || "",
+        status: it.status,
+        result: it.result || null,
+        c2pa: it.c2pa || null,
+        error: it.error || "",
+        feedbackSent: Boolean(it.feedbackSent),
+        quotaExceeded: Boolean(it.quotaExceeded),
+        heatmap: it.heatmap || null,
+      };
+      if (item.status === "queued" || item.status === "analyzing") {
+        item.status = "error";
+        item.error = "Page was reloaded — re-add this image to analyze.";
+      }
+      return item;
+    });
+    state.nextId = Math.max(0, ...state.items.map((i) => i.id)) + 1;
+  } catch {}
+}
+
 function restoreSession() {
   const storedJwt = localStorage.getItem(JWT_STORAGE_KEY) || "";
   const storedApiKey = sessionStorage.getItem(API_KEY_SESSION_KEY) || "";
@@ -947,6 +1034,7 @@ function restoreSession() {
 
 bindEvents();
 restoreSession();
+restoreItems();
 renderAuth();
 render();
 renderHistory();
