@@ -2307,6 +2307,7 @@ def public_c2pa():
 
 
 _FREE_ANALYSIS_LIMIT = int(os.getenv("FREE_ANALYSIS_LIMIT", "5"))
+_QUOTA_ENFORCED = os.getenv("QUOTA_ENFORCED", "").strip().lower() in ("1", "true", "yes")
 _QUOTA_EXEMPT_EMAILS = {e.strip().lower() for e in os.getenv("QUOTA_EXEMPT_EMAILS", "").split(",") if e.strip()}
 _PRICE_PER_IMAGE_INR = float(os.getenv("PRICE_PER_IMAGE_INR", "10"))
 _PRICE_PER_IMAGE_USD = float(os.getenv("PRICE_PER_IMAGE_USD", "0.50"))
@@ -2458,6 +2459,8 @@ def _count_user_analyses(user_sub):
 def _free_quota_gate():
     """402 response when a signed-in user has exhausted the free tier.
     API-key plans are unaffected (they already carry plan limits)."""
+    if not _QUOTA_ENFORCED:
+        return None
     if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
         return None
     if (getattr(g, "user_email", None) or "").strip().lower() in _QUOTA_EXEMPT_EMAILS:
@@ -2485,7 +2488,7 @@ def _free_quota_gate():
 def api_usage():
     if getattr(g, "api_key_id", None) or not getattr(g, "user_sub", None):
         return jsonify({"plan": "api_key", "free_limit": None, "used": None})
-    exempt = (getattr(g, "user_email", None) or "").strip().lower() in _QUOTA_EXEMPT_EMAILS
+    exempt = not _QUOTA_ENFORCED or (getattr(g, "user_email", None) or "").strip().lower() in _QUOTA_EXEMPT_EMAILS
     try:
         used, credits = _user_usage_row(g.user_sub)
     except Exception:
